@@ -26,15 +26,15 @@ impl<C> std::fmt::Debug for InternalRoutingInfo<C> {
 impl<C> From<RoutingInfo> for InternalRoutingInfo<C> {
     fn from(value: RoutingInfo) -> Self {
         match value {
-            RoutingInfo::SingleNode(route) => Self::SingleNode(route.into()),
-            RoutingInfo::MultiNode(routes) => Self::MultiNode(routes),
+            RoutingInfo::SingleNode(route) => InternalRoutingInfo::SingleNode(route.into()),
+            RoutingInfo::MultiNode(routes) => InternalRoutingInfo::MultiNode(routes),
         }
     }
 }
 
 impl<C> From<InternalSingleNodeRouting<C>> for InternalRoutingInfo<C> {
     fn from(value: InternalSingleNodeRouting<C>) -> Self {
-        Self::SingleNode(value)
+        InternalRoutingInfo::SingleNode(value)
     }
 }
 
@@ -50,7 +50,7 @@ pub(super) enum InternalSingleNodeRouting<C> {
     },
     Redirect {
         redirect: Redirect,
-        previous_routing: Box<Self>,
+        previous_routing: Box<InternalSingleNodeRouting<C>>,
     },
 }
 
@@ -82,12 +82,16 @@ impl<C> std::fmt::Debug for InternalSingleNodeRouting<C> {
 impl<C> From<SingleNodeRoutingInfo> for InternalSingleNodeRouting<C> {
     fn from(value: SingleNodeRoutingInfo) -> Self {
         match value {
-            SingleNodeRoutingInfo::Random => Self::Random,
-            SingleNodeRoutingInfo::SpecificNode(route) => Self::SpecificNode(route),
-            SingleNodeRoutingInfo::ByAddress { host, port } => {
-                Self::ByAddress(NodeAddress::new(host, port))
+            SingleNodeRoutingInfo::Random => InternalSingleNodeRouting::Random,
+            SingleNodeRoutingInfo::SpecificNode(route) => {
+                InternalSingleNodeRouting::SpecificNode(route)
             }
-            SingleNodeRoutingInfo::RandomPrimary => Self::SpecificNode(Route::new_random_primary()),
+            SingleNodeRoutingInfo::ByAddress { host, port } => {
+                InternalSingleNodeRouting::ByAddress(NodeAddress::new(host, port))
+            }
+            SingleNodeRoutingInfo::RandomPrimary => {
+                InternalSingleNodeRouting::SpecificNode(Route::new_random_primary())
+            }
         }
     }
 }
@@ -95,16 +99,16 @@ impl<C> From<SingleNodeRoutingInfo> for InternalSingleNodeRouting<C> {
 pub(super) fn route_for_pipeline(pipeline: &crate::Pipeline) -> RedisResult<Option<Route>> {
     fn route_for_command(cmd: &Cmd) -> Option<Route> {
         match RoutingInfo::for_routable(cmd) {
+            Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random)) => None,
             Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::SpecificNode(route))) => {
                 Some(route)
             }
+            Some(RoutingInfo::MultiNode(_)) => None,
+            Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::ByAddress { .. })) => None,
             Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::RandomPrimary)) => {
                 Some(Route::new_random_primary())
             }
-            Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::Random))
-            | Some(RoutingInfo::MultiNode(_))
-            | Some(RoutingInfo::SingleNode(SingleNodeRoutingInfo::ByAddress { .. }))
-            | None => None,
+            None => None,
         }
     }
 

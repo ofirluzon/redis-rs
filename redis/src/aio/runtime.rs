@@ -34,7 +34,7 @@ impl TaskHandle {
     pub(crate) fn detach(self) {
         match self {
             #[cfg(feature = "smol-comp")]
-            Self::Smol(task) => task.detach(),
+            TaskHandle::Smol(task) => task.detach(),
             #[cfg(feature = "tokio-comp")]
             _ => {}
         }
@@ -124,9 +124,9 @@ impl Runtime {
         cfg_if::cfg_if! {
             if #[cfg(all(feature = "tokio-comp", feature = "smol-comp"))] {
                 if ::tokio::runtime::Handle::try_current().is_ok() {
-                    Self::Tokio
+                    Runtime::Tokio
                 } else {
-                    Self::Smol
+                    Runtime::Smol
                 }
             }
         }
@@ -138,12 +138,12 @@ impl Runtime {
     }
 
     #[must_use]
-    pub(crate) fn spawn(self, f: impl Future<Output = ()> + Send + 'static) -> TaskHandle {
+    pub(crate) fn spawn(&self, f: impl Future<Output = ()> + Send + 'static) -> TaskHandle {
         match self {
             #[cfg(feature = "tokio-comp")]
-            Self::Tokio => crate_tokio::Tokio::spawn(f),
+            Runtime::Tokio => crate_tokio::Tokio::spawn(f),
             #[cfg(feature = "smol-comp")]
-            Self::Smol => crate_smol::Smol::spawn(f),
+            Runtime::Smol => crate_smol::Smol::spawn(f),
         }
     }
 
@@ -154,11 +154,11 @@ impl Runtime {
     ) -> Result<F::Output, Elapsed> {
         match self {
             #[cfg(feature = "tokio-comp")]
-            Self::Tokio => tokio::time::timeout(duration, future)
+            Runtime::Tokio => tokio::time::timeout(duration, future)
                 .await
                 .map_err(|_| Elapsed(())),
             #[cfg(feature = "smol-comp")]
-            Self::Smol => future.timeout(duration).await.ok_or(Elapsed(())),
+            Runtime::Smol => future.timeout(duration).await.ok_or(Elapsed(())),
         }
     }
 
@@ -166,12 +166,12 @@ impl Runtime {
     pub(crate) async fn sleep(&self, duration: Duration) {
         match self {
             #[cfg(feature = "tokio-comp")]
-            Self::Tokio => {
+            Runtime::Tokio => {
                 tokio::time::sleep(duration).await;
             }
 
             #[cfg(feature = "smol-comp")]
-            Self::Smol => {
+            Runtime::Smol => {
                 smol::Timer::after(duration).await;
             }
         }
@@ -179,7 +179,7 @@ impl Runtime {
 
     #[cfg(feature = "cluster-async")]
     pub(crate) async fn locate_and_sleep(duration: Duration) {
-        Self::locate().sleep(duration).await;
+        Self::locate().sleep(duration).await
     }
 }
 

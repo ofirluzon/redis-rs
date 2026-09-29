@@ -37,30 +37,13 @@ impl SlotMap {
 
     pub fn slot_addr_for_route(
         &self,
-        route: Route,
+        route: &Route,
         strategy: Option<&dyn ReadRoutingStrategy>,
     ) -> Option<&NodeAddress> {
         let slot = route.slot();
         self.slots
             .get(slot)
-            .map(|addrs| addrs.slot_addr(slot, route.slot_addr(), strategy))
-    }
-
-    // TODO - Include the routing strategy in the fallback logic too.
-    #[cfg(feature = "cluster-async")]
-    pub(crate) fn shard_fallback_addrs(&self, route: Route) -> Vec<NodeAddress> {
-        let Some(addrs) = self.slots.get(route.slot()) else {
-            return Vec::new();
-        };
-        match route.slot_addr() {
-            SlotAddr::Master => vec![],
-            SlotAddr::ReplicaOptional => {
-                let mut candidates = addrs.replicas.clone();
-                candidates.push(addrs.primary.clone());
-                candidates
-            }
-            SlotAddr::ReplicaRequired => addrs.replicas.clone(),
-        }
+            .map(|addrs| addrs.slot_addr(slot, &route.slot_addr(), strategy))
     }
 
     #[cfg(feature = "cluster-async")]
@@ -101,7 +84,7 @@ impl SlotMap {
     {
         routes
             .iter()
-            .map(move |(route, _)| self.slot_addr_for_route(*route, strategy))
+            .map(move |(route, _)| self.slot_addr_for_route(route, strategy))
     }
 
     /// Produces a [`ClusterTopology`] snapshot by grouping slot ranges by
@@ -153,7 +136,7 @@ impl SlotAddrs {
     pub(crate) fn slot_addr(
         &self,
         slot: u16,
-        slot_addr: SlotAddr,
+        slot_addr: &SlotAddr,
         strategy: Option<&dyn ReadRoutingStrategy>,
     ) -> &NodeAddress {
         let Some(strategy) = strategy else {
@@ -180,7 +163,7 @@ impl SlotAddrs {
     }
 
     pub(crate) fn from_slot(slot: SlotRange) -> Self {
-        Self::new(slot.master, slot.replicas)
+        SlotAddrs::new(slot.master, slot.replicas)
     }
 }
 
@@ -259,7 +242,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(1).unwrap(), SlotAddr::Master),
+                    &Route::with_slot(Slot::new(1).unwrap(), SlotAddr::Master),
                     Some(&strategy)
                 )
                 .unwrap(),
@@ -268,7 +251,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(500).unwrap(), SlotAddr::Master),
+                    &Route::with_slot(Slot::new(500).unwrap(), SlotAddr::Master),
                     Some(&strategy)
                 )
                 .unwrap(),
@@ -277,7 +260,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(1000).unwrap(), SlotAddr::Master),
+                    &Route::with_slot(Slot::new(1000).unwrap(), SlotAddr::Master),
                     Some(&strategy)
                 )
                 .unwrap(),
@@ -286,7 +269,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(1000).unwrap(), SlotAddr::ReplicaOptional),
+                    &Route::with_slot(Slot::new(1000).unwrap(), SlotAddr::ReplicaOptional),
                     Some(&strategy)
                 )
                 .unwrap(),
@@ -295,7 +278,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(1001).unwrap(), SlotAddr::Master),
+                    &Route::with_slot(Slot::new(1001).unwrap(), SlotAddr::Master),
                     Some(&strategy)
                 )
                 .unwrap(),
@@ -304,7 +287,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(1500).unwrap(), SlotAddr::Master),
+                    &Route::with_slot(Slot::new(1500).unwrap(), SlotAddr::Master),
                     Some(&strategy)
                 )
                 .unwrap(),
@@ -313,7 +296,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(2000).unwrap(), SlotAddr::Master),
+                    &Route::with_slot(Slot::new(2000).unwrap(), SlotAddr::Master),
                     Some(&strategy)
                 )
                 .unwrap(),
@@ -322,7 +305,7 @@ mod tests {
         assert!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(2001).unwrap(), SlotAddr::Master),
+                    &Route::with_slot(Slot::new(2001).unwrap(), SlotAddr::Master),
                     Some(&strategy)
                 )
                 .is_none()
@@ -341,7 +324,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(1000).unwrap(), SlotAddr::ReplicaOptional),
+                    &Route::with_slot(Slot::new(1000).unwrap(), SlotAddr::ReplicaOptional),
                     None
                 )
                 .unwrap(),
@@ -350,68 +333,12 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(1000).unwrap(), SlotAddr::ReplicaRequired),
+                    &Route::with_slot(Slot::new(1000).unwrap(), SlotAddr::ReplicaRequired),
                     None
                 )
                 .unwrap(),
             "replica1:6379"
         );
-    }
-
-    #[cfg(feature = "cluster-async")]
-    #[test]
-    fn test_shard_fallback_addrs_master_is_empty() {
-        let slot_map = get_slot_map();
-        let fallback = slot_map
-            .shard_fallback_addrs(Route::with_slot(Slot::new(1500).unwrap(), SlotAddr::Master));
-        assert!(fallback.is_empty());
-    }
-
-    #[cfg(feature = "cluster-async")]
-    #[test]
-    fn test_shard_fallback_addrs_replica_optional() {
-        let slot_map = get_slot_map();
-        let fallback = slot_map.shard_fallback_addrs(Route::with_slot(
-            Slot::new(1500).unwrap(),
-            SlotAddr::ReplicaOptional,
-        ));
-        assert_eq!(
-            fallback,
-            vec![
-                addr("replica2:6379"),
-                addr("replica3:6379"),
-                addr("node2:6379")
-            ]
-        );
-    }
-
-    #[cfg(feature = "cluster-async")]
-    #[test]
-    fn test_shard_fallback_addrs_replica_requiredy() {
-        let slot_map = get_slot_map();
-        let fallback = slot_map.shard_fallback_addrs(Route::with_slot(
-            Slot::new(2500).unwrap(),
-            SlotAddr::ReplicaRequired,
-        ));
-        assert_eq!(
-            fallback,
-            vec![
-                addr("replica4:6379"),
-                addr("replica5:6379"),
-                addr("replica6:6379")
-            ]
-        );
-    }
-
-    #[cfg(feature = "cluster-async")]
-    #[test]
-    fn test_shard_fallback_addrs_missing_slot_is_empty() {
-        let slot_map = get_slot_map();
-        let fallback = slot_map.shard_fallback_addrs(Route::with_slot(
-            Slot::new(1001).unwrap(),
-            SlotAddr::ReplicaOptional,
-        ));
-        assert!(fallback.is_empty());
     }
 
     fn get_slot_map() -> SlotMap {
@@ -687,7 +614,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(500).unwrap(), SlotAddr::ReplicaOptional),
+                    &Route::with_slot(Slot::new(500).unwrap(), SlotAddr::ReplicaOptional),
                     Some(&strategy)
                 )
                 .unwrap(),
@@ -698,7 +625,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(500).unwrap(), SlotAddr::ReplicaRequired),
+                    &Route::with_slot(Slot::new(500).unwrap(), SlotAddr::ReplicaRequired),
                     Some(&strategy)
                 )
                 .unwrap(),
@@ -709,7 +636,7 @@ mod tests {
         assert_eq!(
             slot_map
                 .slot_addr_for_route(
-                    Route::with_slot(Slot::new(500).unwrap(), SlotAddr::Master),
+                    &Route::with_slot(Slot::new(500).unwrap(), SlotAddr::Master),
                     Some(&strategy)
                 )
                 .unwrap(),

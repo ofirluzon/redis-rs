@@ -44,8 +44,8 @@ fn assert_replica_role_and_master_addr(replication_info: String, expected_master
     assert_eq!(info_map.get("role"), Some(&"slave"));
 
     let (master_host, master_port) = match expected_master.addr() {
-        ConnectionAddr::Tcp(host, port)
-        | ConnectionAddr::TcpTls {
+        ConnectionAddr::Tcp(host, port) => (host, port),
+        ConnectionAddr::TcpTls {
             host,
             port,
             insecure: _,
@@ -81,7 +81,7 @@ fn connect_to_all_replicas(
     node_conn_info: &SentinelNodeConnectionInfo,
     number_of_replicas: u16,
 ) -> Vec<ConnectionAddr> {
-    let mut replica_conn_info = vec![];
+    let mut replica_conn_infos = vec![];
 
     for _ in 0..number_of_replicas {
         let replica_client = sentinel
@@ -89,18 +89,18 @@ fn connect_to_all_replicas(
             .unwrap();
         let mut replica_con = replica_client.get_connection().unwrap();
 
-        assert!(!replica_conn_info.contains(replica_client.get_connection_info().addr()));
-        replica_conn_info.push(replica_client.get_connection_info().addr().clone());
+        assert!(!replica_conn_infos.contains(replica_client.get_connection_info().addr()));
+        replica_conn_infos.push(replica_client.get_connection_info().addr().clone());
 
         assert_connection_is_replica_of_correct_master(&mut replica_con, master_client);
     }
 
-    replica_conn_info
+    replica_conn_infos
 }
 
 fn assert_connect_to_known_replicas(
     sentinel: &mut Sentinel,
-    replica_conn_info: &[ConnectionAddr],
+    replica_conn_infos: &[ConnectionAddr],
     master_name: &str,
     master_client: &Client,
     node_conn_info: &SentinelNodeConnectionInfo,
@@ -112,7 +112,7 @@ fn assert_connect_to_known_replicas(
             .unwrap();
         let mut replica_con = replica_client.get_connection().unwrap();
 
-        assert!(replica_conn_info.contains(replica_client.get_connection_info().addr()));
+        assert!(replica_conn_infos.contains(replica_client.get_connection_info().addr()));
 
         assert_connection_is_replica_of_correct_master(&mut replica_con, master_client);
     }
@@ -331,7 +331,7 @@ fn test_sentinel_connect_to_multiple_replicas() {
 
     assert_is_connection_to_master(&mut master_con);
 
-    let replica_conn_info = connect_to_all_replicas(
+    let replica_conn_infos = connect_to_all_replicas(
         sentinel,
         master_name,
         &master_client,
@@ -341,7 +341,7 @@ fn test_sentinel_connect_to_multiple_replicas() {
 
     assert_connect_to_known_replicas(
         sentinel,
-        &replica_conn_info,
+        &replica_conn_infos,
         master_name,
         &master_client,
         &node_conn_info,
@@ -369,7 +369,7 @@ fn test_sentinel_server_down() {
 
     let sentinel = context.sentinel_mut();
 
-    let replica_conn_info = connect_to_all_replicas(
+    let replica_conn_infos = connect_to_all_replicas(
         sentinel,
         master_name,
         &master_client,
@@ -379,7 +379,7 @@ fn test_sentinel_server_down() {
 
     assert_connect_to_known_replicas(
         sentinel,
-        &replica_conn_info,
+        &replica_conn_infos,
         master_name,
         &master_client,
         &node_conn_info,
@@ -475,32 +475,6 @@ fn test_sentinel_client() {
 }
 
 #[test]
-fn test_sentinel_non_sentinel_address_error() {
-    let master_name = "master1";
-    let context = TestSentinelContext::new(2, 3, 3);
-    // Build a Sentinel using regular Redis node addresses instead of sentinel addresses
-    let mut sentinel = Sentinel::build(
-        context
-            .cluster
-            .servers
-            .iter()
-            .map(|s| s.connection_info())
-            .collect::<Vec<_>>(),
-    )
-    .unwrap();
-    let node_conn_info = context.sentinel_node_connection_info();
-    let err = sentinel
-        .master_for(master_name, Some(&node_conn_info))
-        .unwrap_err();
-    assert_eq!(err.kind(), ErrorKind::InvalidClientConfig);
-    assert!(
-        err.to_string()
-            .contains("Address does not point to a sentinel node"),
-        "{err}"
-    );
-}
-
-#[test]
 fn test_sentinel_client_io_error() {
     let master_name = "master1";
 
@@ -526,7 +500,7 @@ fn test_sentinel_client_not_sentinel_error() {
         .cluster
         .servers
         .iter()
-        .map(|redis_server| redis_server.connection_info())
+        .map(|redis_server| redis_server.connection_info().clone())
         .collect::<Vec<_>>();
     let mut master_client = SentinelClient::build(
         context.sentinels_connection_info().clone(),
@@ -652,7 +626,7 @@ pub mod async_tests {
         node_conn_info: &SentinelNodeConnectionInfo,
         number_of_replicas: u16,
     ) -> Vec<ConnectionAddr> {
-        let mut replica_conn_info = vec![];
+        let mut replica_conn_infos = vec![];
 
         for _ in 0..number_of_replicas {
             let replica_client = sentinel
@@ -665,23 +639,23 @@ pub mod async_tests {
                 .unwrap();
 
             assert!(
-                !replica_conn_info.contains(replica_client.get_connection_info().addr()),
+                !replica_conn_infos.contains(replica_client.get_connection_info().addr()),
                 "pushing {:?} into {:?}",
                 replica_client.get_connection_info().addr(),
-                replica_conn_info
+                replica_conn_infos
             );
-            replica_conn_info.push(replica_client.get_connection_info().addr().clone());
+            replica_conn_infos.push(replica_client.get_connection_info().addr().clone());
 
             async_assert_connection_is_replica_of_correct_master(&mut replica_con, master_client)
                 .await;
         }
 
-        replica_conn_info
+        replica_conn_infos
     }
 
     async fn async_assert_connect_to_known_replicas(
         sentinel: &mut Sentinel,
-        replica_conn_info: &[ConnectionAddr],
+        replica_conn_infos: &[ConnectionAddr],
         master_name: &str,
         master_client: &Client,
         node_conn_info: &SentinelNodeConnectionInfo,
@@ -697,7 +671,7 @@ pub mod async_tests {
                 .await
                 .unwrap();
 
-            assert!(replica_conn_info.contains(replica_client.get_connection_info().addr()));
+            assert!(replica_conn_infos.contains(replica_client.get_connection_info().addr()));
 
             async_assert_connection_is_replica_of_correct_master(&mut replica_con, master_client)
                 .await;
@@ -705,7 +679,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_connect_to_random_replica_async() {
+    async fn sentinel_connect_to_random_replica_async() {
         let master_name = "master1";
         let mut context = TestSentinelContext::new(2, 3, 3);
         let node_conn_info = context.sentinel_node_connection_info();
@@ -734,7 +708,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_connect_to_multiple_replicas_async() {
+    async fn sentinel_connect_to_multiple_replicas_async() {
         let number_of_replicas = 3;
         let master_name = "master1";
         let mut cluster = TestSentinelContext::new(2, number_of_replicas, 3);
@@ -752,7 +726,7 @@ pub mod async_tests {
 
         async_assert_is_connection_to_master(&mut master_con).await;
 
-        let replica_conn_info = async_connect_to_all_replicas(
+        let replica_conn_infos = async_connect_to_all_replicas(
             sentinel,
             master_name,
             &master_client,
@@ -763,7 +737,7 @@ pub mod async_tests {
 
         async_assert_connect_to_known_replicas(
             sentinel,
-            &replica_conn_info,
+            &replica_conn_infos,
             master_name,
             &master_client,
             &node_conn_info,
@@ -773,7 +747,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_server_down_async() {
+    async fn sentinel_server_down_async() {
         let number_of_replicas = 3;
         let master_name = "master1";
         let mut context = TestSentinelContext::new(2, number_of_replicas, 3);
@@ -797,7 +771,7 @@ pub mod async_tests {
 
         let sentinel = context.sentinel_mut();
 
-        let replica_conn_info = async_connect_to_all_replicas(
+        let replica_conn_infos = async_connect_to_all_replicas(
             sentinel,
             master_name,
             &master_client,
@@ -808,7 +782,7 @@ pub mod async_tests {
 
         async_assert_connect_to_known_replicas(
             sentinel,
-            &replica_conn_info,
+            &replica_conn_infos,
             master_name,
             &master_client,
             &node_conn_info,
@@ -818,7 +792,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_redis_client_async() {
+    async fn sentinel_redis_client_async() {
         let master_name = "master1";
         let mut context = TestSentinelContext::new(2, 3, 3);
         let mut master_client = SentinelClient::build(
@@ -858,7 +832,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_client_async() {
+    async fn sentinel_client_async() {
         let master_name = "master1";
         let context = TestSentinelContext::new(2, 3, 3);
         let mut master_client = SentinelClient::build(
@@ -893,34 +867,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_non_sentinel_address_error_async() {
-        let master_name = "master1";
-        let context = TestSentinelContext::new(2, 3, 3);
-        // Build a Sentinel using regular Redis node addresses instead of sentinel addresses
-        let mut sentinel = Sentinel::build(
-            context
-                .cluster
-                .servers
-                .iter()
-                .map(|s| s.connection_info())
-                .collect::<Vec<_>>(),
-        )
-        .unwrap();
-        let node_conn_info = context.sentinel_node_connection_info();
-        let err = sentinel
-            .async_master_for(master_name, Some(&node_conn_info))
-            .await
-            .unwrap_err();
-        assert_eq!(err.kind(), ErrorKind::InvalidClientConfig);
-        assert!(
-            err.to_string()
-                .contains("Address does not point to a sentinel node"),
-            "{err}"
-        );
-    }
-
-    #[async_test]
-    async fn test_sentinel_client_async_not_sentinel_error() {
+    async fn sentinel_client_async_not_sentinel_error() {
         let master_name = "master1";
 
         let mut context = TestSentinelContext::new(2, 3, 3);
@@ -929,7 +876,7 @@ pub mod async_tests {
             .cluster
             .servers
             .iter()
-            .map(|redis_server| redis_server.connection_info())
+            .map(|redis_server| redis_server.connection_info().clone())
             .collect::<Vec<_>>();
         let mut master_client = SentinelClient::build(
             context.sentinels_connection_info().clone(),
@@ -951,7 +898,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_client_async_io_error() {
+    async fn sentinel_client_async_io_error() {
         let master_name = "master1";
 
         let mut master_client = SentinelClient::build(
@@ -968,7 +915,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_client_async_with_connection_timeout() {
+    async fn sentinel_client_async_with_connection_timeout() {
         let master_name = "master1";
         let mut context = TestSentinelContext::new(2, 3, 3);
         let mut master_client = SentinelClient::build(
@@ -1017,7 +964,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_client_async_with_response_timeout() {
+    async fn sentinel_client_async_with_response_timeout() {
         let master_name = "master1";
         let mut context = TestSentinelContext::new(2, 3, 3);
         let mut master_client = SentinelClient::build(
@@ -1065,7 +1012,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_sentinel_client_async_with_timeouts() {
+    async fn sentinel_client_async_with_timeouts() {
         let master_name = "master1";
         let mut context = TestSentinelContext::new(2, 3, 3);
         let mut master_client = SentinelClient::build(
@@ -1113,7 +1060,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_get_replica_clients_success_async() {
+    async fn get_replica_clients_success_async() {
         let number_of_replicas = 3;
         let master_name = "master1";
         let mut context = TestSentinelContext::new(2, number_of_replicas, 3);
@@ -1128,7 +1075,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_get_replica_clients_invalid_master_name_async() {
+    async fn get_replica_clients_invalid_master_name_async() {
         let mut context = TestSentinelContext::new(2, 2, 3);
         let node_conn_info = context.sentinel_node_connection_info();
         let sentinel = context.sentinel_mut();
@@ -1148,7 +1095,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_get_replica_clients_report_correct_master_async() {
+    async fn get_replica_clients_report_correct_master_async() {
         let number_of_replicas = 3;
         let master_name = "master1";
         let mut context = TestSentinelContext::new(2, number_of_replicas, 3);
@@ -1174,7 +1121,7 @@ pub mod async_tests {
     }
 
     #[async_test]
-    async fn test_get_replica_clients_with_one_replica_down_async() {
+    async fn get_replica_clients_with_one_replica_down_async() {
         let number_of_replicas = 3;
         let master_name = "master0";
         let mut context = TestSentinelContext::new(2, number_of_replicas, 3);
@@ -1281,7 +1228,7 @@ pub mod pool_tests {
     }
 }
 
-#[cfg(all(feature = "tokio-comp", feature = "bb8"))]
+#[cfg(feature = "tokio-comp")]
 pub mod bb8_pool_tests {
     use super::*;
     use bb8::Pool;
@@ -1324,7 +1271,7 @@ pub mod bb8_pool_tests {
 
         // since max_size is 5 and we haven't freed any connection this try should fail
         let try_conn = pool.get().await;
-        try_conn.unwrap_err();
+        assert!(try_conn.is_err());
 
         let mut client_id_set = HashSet::new();
 
@@ -1345,11 +1292,11 @@ pub mod bb8_pool_tests {
                 .query_async(&mut *conn)
                 .await
                 .unwrap();
-            assert_is_master_role(info);
+            assert_is_master_role(info)
         }
 
         // since previous connections are freed, this should work
         let try_conn = pool.get().await;
-        try_conn.unwrap();
+        assert!(try_conn.is_ok());
     }
 }

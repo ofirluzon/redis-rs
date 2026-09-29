@@ -12,33 +12,13 @@ pub const REDIS_CE_8_0: Component = ("redis", (8, 0, 0));
 pub const REDIS_CE_8_2: Component = ("redis", (8, 1, 240));
 pub const REDIS_CE_8_4: Component = ("redis", (8, 3, 224));
 pub const REDIS_CE_8_6: Component = ("redis", (8, 6, 0));
-pub const REDIS_CE_8_8: Component = ("redis", (8, 8, 0));
-
-pub const REDIS_JSON_8_8: Component = ("ReJSON", (8, 8, 0));
-pub const REDIS_BLOOM_ANY: Component = ("redis:bf", (0, 0, 0));
-
-pub const REDIS_SEARCH_8_0: Component = ("redis:search", (8, 0, 0));
-// TODO: pin to the real minimum once the version decoder
-// handles valkey-search's bit-shifted `ver` (e.g. 66049 == 1.2.1, but we
-// currently decode as 6.60.49). Until then, accept any version.
-// See https://github.com/redis-rs/redis-rs/pull/2318#discussion_r4096606850
-pub const VALKEY_SEARCH_ANY: Component = ("valkey:search", (0, 0, 0));
 
 // Valkey forked off at Redis 7.2.4 and still reports its Redis version 7.2.4. So tests that run
 // on Redis<=7.2.4 automatically also run on any Valkey server, and we only need version guards for
 // later versions.
-pub const VALKEY_ANY: Component = ("valkey", (0, 0, 0));
-pub const VALKEY_7_2: Component = ("valkey", (7, 2, 15));
-pub const VALKEY_7_2_15: Component = ("valkey", (7, 2, 15));
-pub const VALKEY_8_0: Component = ("valkey", (8, 0, 0));
-pub const VALKEY_8_0_11: Component = ("valkey", (8, 0, 11));
 pub const VALKEY_8_1: Component = ("valkey", (8, 1, 0));
-pub const VALKEY_8_1_10: Component = ("valkey", (8, 1, 10));
 pub const VALKEY_9_0: Component = ("valkey", (9, 0, 0));
-pub const VALKEY_9_0_6: Component = ("valkey", (9, 0, 6));
 pub const VALKEY_9_1: Component = ("valkey", (9, 1, 0));
-pub const VALKEY_9_1_2: Component = ("valkey", (9, 1, 2));
-pub const VALKEY_9_2: Component = ("valkey", (9, 2, 0));
 
 /// Version of a software component
 pub type Version = (u32, u32, u32);
@@ -51,7 +31,7 @@ pub struct ComponentMatcher<'a> {
     conjunctive_parts: Vec<Vec<Component<'a>>>,
 }
 
-impl ComponentMatcher<'_> {
+impl<'a> ComponentMatcher<'a> {
     /// Checks if this matcher matches the given available components
     ///
     /// # Arguments
@@ -100,22 +80,35 @@ impl<'a> From<&[&[Component<'a>]]> for ComponentMatcher<'a> {
     }
 }
 
-/// Coercing array implementations for matchers' slice implementations
+/// Macros to provide array implementations for matchers' slice implementations
 ///
-/// Rust can auto-coerce arrays to slices. But with generic arguments, this
+/// Rust can auto-coerce array to slices. But with generic arguments, this
 /// array-to-slice-auto-coercion does not kick in. So one would have to convert manually. To avoid
-/// this, these const-generic `From`s coerce arrays of any length to the corresponding slice matcher.
-impl<'a, const N: usize> From<[Component<'a>; N]> for ComponentMatcher<'a> {
-    fn from(value: [Component<'a>; N]) -> Self {
-        Self::from(value.as_slice())
-    }
-}
+/// this for the common cases, this macro implements coercing `From`s. for a given array length
+///
+/// # Arguments
+///
+/// * `$n` - The array lengths to implement coercing `From`s for.
+macro_rules! matcher_array_impls {
+    ($n:expr) => {
+        impl<'a> From<[Component<'a>; $n]> for ComponentMatcher<'a> {
+            fn from(value: [Component<'a>; $n]) -> Self {
+                let coerced_value: &[Component<'a>] = &value;
+                Self::from(coerced_value)
+            }
+        }
 
-impl<'a, const N: usize> From<[&[Component<'a>]; N]> for ComponentMatcher<'a> {
-    fn from(value: [&[Component<'a>]; N]) -> Self {
-        Self::from(value.as_slice())
-    }
+        impl<'a> From<[&[Component<'a>]; $n]> for ComponentMatcher<'a> {
+            fn from(value: [&[Component<'a>]; $n]) -> Self {
+                let coerced_value: &[&[Component<'a>]] = &value;
+                Self::from(coerced_value)
+            }
+        }
+    };
 }
+matcher_array_impls!(1);
+matcher_array_impls!(2);
+matcher_array_impls!(3);
 
 #[derive(Clone)]
 pub struct AvailableComponents {
@@ -142,36 +135,12 @@ impl AvailableComponents {
             };
 
             // Turn into raw component name and version
-            let Some((mut name, version)) = Self::parse_info_kv(key.trim(), value.trim()) else {
+            let Some((name, version)) = Self::parse_info_kv(key.trim(), value.trim()) else {
                 continue;
             };
 
-            // Apply necessary upfixes
-
-            // Both Redis' and Valkey's `bloom` module identify as `bf`, but we need to distinguish
-            // between them in test guards. As Redis' version is 8.0.0+, while Valkey's version is
-            // still around 1.0.0, we use that discrepancy to identify them for now. A discussion
-            // around that is at https://github.com/orgs/valkey-io/discussions/3934
-            if name == "bf" {
-                if version > (8, 0, 0) {
-                    name = "redis:bf".to_string();
-                } else {
-                    name = "valkey:bf".to_string();
-                }
-            }
-
-            // Like `bf`, both servers' search modules report as `search`: Redis' tracks the
-            // server version (8.x+), Valkey's is still ~1.x.
-            if name == "search" {
-                if version > (8, 0, 0) {
-                    name = "redis:search".to_string();
-                } else {
-                    name = "valkey:search".to_string();
-                }
-            }
-
             // Store them
-            ret.insert(name, version);
+            ret.insert(name.to_owned(), version);
         }
         ret
     }
@@ -350,23 +319,10 @@ macro_rules! skip_if_context_does_not_support {
 /// # Returns
 ///
 /// A [`TestContext`], if `$component` is available
-///
-/// # Example
-///
-/// Without modules:
-/// ```ignore
-/// let ctx = run_test_if_version_supported!(REDIS_CE_8_0);
-/// ```
-///
-/// With modules:
-/// ```ignore
-/// let ctx = run_test_if_version_supported!(REDIS_CE_8_0, &[Module::Search]);
-/// ```
 #[macro_export]
 macro_rules! run_test_if_version_supported {
-    ($component:expr) => {{ $crate::run_test_if_version_supported!($component, &[]) }};
-    ($component:expr, $modules:expr) => {{
-        let ctx = $crate::support::TestContext::with_modules($modules);
+    ($component:expr) => {{
+        let ctx = $crate::support::TestContext::new();
 
         $crate::skip_if_context_does_not_support!(ctx, $component);
 

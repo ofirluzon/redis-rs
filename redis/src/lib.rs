@@ -106,7 +106,6 @@
 //! * `uuid`: enables type conversion to UUID (optional)
 //! * `sentinel`: enables high-level interfaces for communication with Redis sentinels (optional)
 //! * `json`: enables high-level interfaces for communication with the JSON module (optional)
-//! * `search_unfinished`: enables high-level interfaces for communication with the Search module (optional) NOTE: Currently, this feature is incomplete and should be considered a work in progress.
 //! * `cache-aio`: enables **experimental** client side caching for MultiplexedConnection, ConnectionManager and async ClusterConnection (optional)
 //!
 //! ## Connection Parameters
@@ -446,8 +445,6 @@
 //! # Ok(()) }
 //! ```
 //!
-#![deny(clippy::disallowed_macros)]
-#![cfg_attr(test, allow(clippy::disallowed_macros))]
 #![cfg_attr(
     feature = "script",
     doc = r##"
@@ -641,10 +638,6 @@ let primary = sentinel.get_async_connection().await.unwrap();
         reason = "rustdoc_internals is needed for fake_variadic"
     )
 )]
-#![cfg_attr(not(test), forbid(clippy::print_stdout))]
-#![cfg_attr(not(test), forbid(clippy::panic))]
-#![cfg_attr(not(test), forbid(clippy::infinite_loop))]
-// #![cfg_attr(not(test), forbid(clippy::cast_possible_truncation))]
 
 // public api
 #[cfg(feature = "aio")]
@@ -655,8 +648,8 @@ pub use crate::cmd::CommandCacheConfig;
 pub use crate::cmd::{Arg, Cmd, Iter, cmd, pack_command, pipe};
 pub use crate::commands::{
     Commands, ControlFlow, CopyOptions, Direction, FlushAllOptions, FlushDbOptions,
-    HashFieldExpirationOptions, HotkeysCommands, IncrexOptions, LposOptions, MSetOptions,
-    PubSubCommands, ScanOptions, SetOptions, SortedSetAddOptions, TypedCommands, UpdateCheck,
+    HashFieldExpirationOptions, HotkeysCommands, LposOptions, MSetOptions, PubSubCommands,
+    ScanOptions, SetOptions, SortedSetAddOptions, TypedCommands, UpdateCheck,
     hotkeys::{
         HOTKEYS_COUNT_MAX, HOTKEYS_COUNT_MIN, HotKeyEntry, HotkeysOptions, HotkeysResponse,
         SlotRange,
@@ -706,7 +699,6 @@ pub use crate::types::{
     Role,
     ReplicaInfo,
     IntegerReplyOrNoOp,
-    IncrexResult,
     ValueType,
     RedisResult,
     RedisWrite,
@@ -753,7 +745,7 @@ pub mod bloom;
 
 #[cfg(feature = "json")]
 #[cfg_attr(docsrs, doc(cfg(feature = "json")))]
-pub use crate::commands::{JsonCommands, json};
+pub use crate::commands::JsonCommands;
 
 #[cfg(all(feature = "json", feature = "aio"))]
 #[cfg_attr(docsrs, doc(cfg(all(feature = "json", feature = "aio"))))]
@@ -766,10 +758,6 @@ pub use crate::commands::AsyncHotkeysCommands;
 #[cfg(feature = "vector-sets")]
 #[cfg_attr(docsrs, doc(cfg(feature = "vector-sets")))]
 pub use crate::commands::vector_sets;
-
-#[cfg(feature = "search_unfinished")]
-#[cfg_attr(docsrs, doc(cfg(feature = "search_unfinished")))]
-pub use crate::commands::search;
 
 #[cfg(feature = "geospatial")]
 #[cfg_attr(docsrs, doc(cfg(feature = "geospatial")))]

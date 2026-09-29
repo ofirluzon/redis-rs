@@ -1,6 +1,6 @@
 use super::{AsyncPushSender, ConnectionLike, Runtime, SharedHandleContainer, TaskHandle};
 #[cfg(feature = "cache-aio")]
-use crate::caching::{CacheManager, CacheStatistics, PrepCacheItem};
+use crate::caching::{CacheManager, CacheStatistics, PrepareCacheResult};
 use crate::{
     AsyncConnectionConfig, ProtocolVersion, PushInfo, RedisConnectionInfo, ServerError,
     ToRedisArgs,
@@ -69,12 +69,12 @@ struct PipelineResponseExpectation {
 impl ResponseAggregate {
     fn new(expectation: Option<PipelineResponseExpectation>) -> Self {
         match expectation {
-            Some(expectation) => Self::Pipeline {
+            Some(expectation) => ResponseAggregate::Pipeline {
                 buffer: Vec::new(),
                 error_or_errors: ErrorOrErrors::Errors(Vec::new()),
                 expectation,
             },
-            None => Self::SingleCommand,
+            None => ResponseAggregate::SingleCommand,
         }
     }
 }
@@ -136,13 +136,11 @@ pin_project! {
 fn send_push(push_sender: &Option<Arc<dyn AsyncPushSender>>, info: PushInfo) {
     if let Some(sender) = push_sender {
         let _ = sender.send(info);
-    }
+    };
 }
 
-fn send_disconnect(push_sender: &mut Option<Arc<dyn AsyncPushSender>>) {
+pub(crate) fn send_disconnect(push_sender: &Option<Arc<dyn AsyncPushSender>>) {
     send_push(push_sender, PushInfo::disconnect());
-    // we don't want to send the same request twice, so if the connection is disconnected we can just stop sending push messages
-    push_sender.take();
 }
 
 impl<T> PipelineSink<T>
@@ -157,7 +155,7 @@ where
     where
         T: Sink<Vec<u8>, Error = RedisError> + Stream<Item = RedisResult<Value>> + 'static,
     {
-        Self {
+        PipelineSink {
             sink_stream,
             in_flight: VecDeque::new(),
             error: None,
@@ -261,7 +259,7 @@ where
                     }
                     Err(err) => {
                         if matches!(error_or_errors, ErrorOrErrors::Errors(_)) {
-                            *error_or_errors = ErrorOrErrors::FirstError(err);
+                            *error_or_errors = ErrorOrErrors::FirstError(err)
                         }
                     }
                 }
@@ -293,13 +291,6 @@ where
             }
         }
     }
-
-    fn send_disconnect_if_needed(self: Pin<&mut Self>, err: &RedisError) {
-        if err.is_unrecoverable_error() {
-            let self_ = self.project();
-            send_disconnect(self_.push_sender);
-        }
-    }
 }
 
 impl<T> Sink<PipelineMessage> for PipelineSink<T>
@@ -325,7 +316,6 @@ where
         match ready!(self.as_mut().project().sink_stream.poll_ready(cx)) {
             Ok(()) => Ok(()).into(),
             Err(err) => {
-                self.as_mut().send_disconnect_if_needed(&err);
                 *self.project().error = Some(err);
                 Ok(()).into()
             }
@@ -394,8 +384,7 @@ where
             .sink_stream
             .poll_flush(cx)
             .map_err(|err| {
-                self.as_mut().send_disconnect_if_needed(&err);
-                self.send_result(Err(err));
+                self.as_mut().send_result(Err(err));
             })
     }
 
@@ -445,7 +434,7 @@ impl Pipeline {
             .map(Ok)
             .forward(sink)
             .map(|_| ());
-        (Self { sender }, f)
+        (Pipeline { sender }, f)
     }
 
     async fn send_recv(
@@ -565,7 +554,7 @@ pub struct MultiplexedConnection {
 
 impl Debug for MultiplexedConnection {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self {
+        let MultiplexedConnection {
             pipeline,
             db,
             response_timeout,
@@ -611,9 +600,6 @@ impl MultiplexedConnection {
         C: Unpin + AsyncRead + AsyncWrite + Send + 'static,
     {
         let mut codec = ValueCodec::default().framed(stream);
-        if let Some(boundary) = config.write_backpressure_boundary {
-            codec.set_backpressure_boundary(boundary);
-        }
         if config.push_sender.is_some() {
             check_resp3!(
                 connection_info.protocol,
@@ -697,7 +683,7 @@ impl MultiplexedConnection {
 
         let concurrency_limiter = build_concurrency_limiter(config.concurrency_limit)?;
 
-        let con = Self {
+        let con = MultiplexedConnection {
             pipeline,
             db: connection_info.db,
             response_timeout: config.response_timeout,
@@ -781,8 +767,8 @@ impl MultiplexedConnection {
         #[cfg(feature = "cache-aio")]
         if let Some(cache_manager) = &self.cache_manager {
             match cache_manager.get_cached_cmd(cmd) {
-                PrepCacheItem::Cached(value) => return Ok(value),
-                PrepCacheItem::NotCached(cacheable_command) => {
+                PrepareCacheResult::Cached(value) => return Ok(value),
+                PrepareCacheResult::NotCached(cacheable_command) => {
                     let mut pipeline = crate::Pipeline::new();
                     cacheable_command.pack_command(cache_manager, &mut pipeline);
 
@@ -803,7 +789,7 @@ impl MultiplexedConnection {
                     let replies: Vec<Value> = crate::types::from_redis_value(result)?;
                     return cacheable_command.resolve(cache_manager, replies.into_iter());
                 }
-                PrepCacheItem::NotCacheable => (),
+                _ => (),
             }
         }
         self.pipeline
@@ -902,11 +888,11 @@ impl ConnectionLike for MultiplexedConnection {
 
     fn req_packed_commands<'a>(
         &'a mut self,
-        pipeline: &'a crate::Pipeline,
+        cmd: &'a crate::Pipeline,
         offset: usize,
         count: usize,
     ) -> RedisFuture<'a, Vec<Value>> {
-        (async move { self.send_packed_commands(pipeline, offset, count).await }).boxed()
+        (async move { self.send_packed_commands(cmd, offset, count).await }).boxed()
     }
 
     fn get_db(&self) -> i64 {
@@ -1022,6 +1008,31 @@ impl MultiplexedConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn large_write_is_released_before_next_request_without_corrupting_it() {
+        use futures_util::SinkExt;
+        use tokio::io::AsyncReadExt;
+
+        let (client, mut server) = tokio::io::duplex(1024 * 1024);
+        let mut framed = ValueCodec::default().framed(client);
+        let large = vec![b'x'; 512 * 1024];
+        framed.send(large.clone()).await.unwrap();
+        assert!(framed.write_buffer().is_empty());
+        let mut received = vec![0; large.len()];
+        server.read_exact(&mut received).await.unwrap();
+        assert_eq!(received, large);
+
+        framed.send(b"PING".to_vec()).await.unwrap();
+        assert!(
+            framed.write_buffer().capacity() <= 64 * 1024,
+            "write buffer retained {} bytes after next request",
+            framed.write_buffer().capacity()
+        );
+        let mut small = [0; 4];
+        server.read_exact(&mut small).await.unwrap();
+        assert_eq!(&small, b"PING");
+    }
 
     #[test]
     fn test_pipeline_resolve_buffer_size_default() {

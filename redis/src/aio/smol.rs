@@ -121,31 +121,31 @@ impl AsyncWrite for Smol {
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
         match &mut *self {
-            Self::Tcp(r) => Pin::new(r).poll_write(cx, buf),
+            Smol::Tcp(r) => Pin::new(r).poll_write(cx, buf),
             #[cfg(any(feature = "smol-native-tls-comp", feature = "smol-rustls-comp"))]
-            Self::TcpTls(r) => Pin::new(r).poll_write(cx, buf),
+            Smol::TcpTls(r) => Pin::new(r).poll_write(cx, buf),
             #[cfg(unix)]
-            Self::Unix(r) => Pin::new(r).poll_write(cx, buf),
+            Smol::Unix(r) => Pin::new(r).poll_write(cx, buf),
         }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<io::Result<()>> {
         match &mut *self {
-            Self::Tcp(r) => Pin::new(r).poll_flush(cx),
+            Smol::Tcp(r) => Pin::new(r).poll_flush(cx),
             #[cfg(any(feature = "smol-native-tls-comp", feature = "smol-rustls-comp"))]
-            Self::TcpTls(r) => Pin::new(r).poll_flush(cx),
+            Smol::TcpTls(r) => Pin::new(r).poll_flush(cx),
             #[cfg(unix)]
-            Self::Unix(r) => Pin::new(r).poll_flush(cx),
+            Smol::Unix(r) => Pin::new(r).poll_flush(cx),
         }
     }
 
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut task::Context) -> Poll<io::Result<()>> {
         match &mut *self {
-            Self::Tcp(r) => Pin::new(r).poll_shutdown(cx),
+            Smol::Tcp(r) => Pin::new(r).poll_shutdown(cx),
             #[cfg(any(feature = "smol-native-tls-comp", feature = "smol-rustls-comp"))]
-            Self::TcpTls(r) => Pin::new(r).poll_shutdown(cx),
+            Smol::TcpTls(r) => Pin::new(r).poll_shutdown(cx),
             #[cfg(unix)]
-            Self::Unix(r) => Pin::new(r).poll_shutdown(cx),
+            Smol::Unix(r) => Pin::new(r).poll_shutdown(cx),
         }
     }
 }
@@ -157,11 +157,11 @@ impl AsyncRead for Smol {
         buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         match &mut *self {
-            Self::Tcp(r) => Pin::new(r).poll_read(cx, buf),
+            Smol::Tcp(r) => Pin::new(r).poll_read(cx, buf),
             #[cfg(any(feature = "smol-native-tls-comp", feature = "smol-rustls-comp"))]
-            Self::TcpTls(r) => Pin::new(r).poll_read(cx, buf),
+            Smol::TcpTls(r) => Pin::new(r).poll_read(cx, buf),
             #[cfg(unix)]
-            Self::Unix(r) => Pin::new(r).poll_read(cx, buf),
+            Smol::Unix(r) => Pin::new(r).poll_read(cx, buf),
         }
     }
 }
@@ -237,11 +237,11 @@ impl RedisRuntime for Smol {
 
     fn boxed(self) -> Pin<Box<dyn AsyncStream + Send + Sync>> {
         match self {
-            Self::Tcp(x) => Box::pin(x),
+            Smol::Tcp(x) => Box::pin(x),
             #[cfg(any(feature = "smol-native-tls-comp", feature = "smol-rustls-comp"))]
-            Self::TcpTls(x) => Box::pin(x),
+            Smol::TcpTls(x) => Box::pin(x),
             #[cfg(unix)]
-            Self::Unix(x) => Box::pin(x),
+            Smol::Unix(x) => Box::pin(x),
         }
     }
 }

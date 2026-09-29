@@ -5,7 +5,6 @@ use crate::auth::StreamingCredentialsProvider;
 #[cfg(all(feature = "cache-aio", feature = "cluster-async"))]
 use crate::caching::{CacheConfig, CacheManager};
 use crate::client::DEFAULT_CONNECTION_TIMEOUT;
-use crate::cluster_handling::NodeAddress;
 use crate::cluster_handling::read_routing::{RandomReplicaStrategy, ReadRoutingStrategyFactory};
 use crate::connection::{ConnectionAddr, ConnectionInfo, IntoConnectionInfo};
 use crate::errors::{ErrorKind, RedisError};
@@ -16,9 +15,6 @@ use crate::types::{ProtocolVersion, RedisResult};
 use crate::{TlsMode, cluster};
 use arcstr::ArcStr;
 use rand::RngExt;
-use std::collections::HashMap;
-#[cfg(feature = "cluster-async")]
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -73,11 +69,6 @@ struct BuilderParams {
     overall_response_timeout: OverallResponseTimeout,
     #[cfg(feature = "cluster-async")]
     connection_concurrency_limit: Option<usize>,
-    #[cfg(feature = "cluster-async")]
-    write_backpressure_boundary: Option<usize>,
-    node_address_map: Option<HashMap<NodeAddress, NodeAddress>>,
-    #[cfg(feature = "cluster-async")]
-    max_connection_attempts: Option<NonZeroUsize>,
 }
 
 #[derive(Clone)]
@@ -164,11 +155,6 @@ pub(crate) struct ClusterParams {
     pub(crate) overall_response_timeout: Option<Duration>,
     #[cfg(feature = "cluster-async")]
     pub(crate) connection_concurrency_limit: Option<usize>,
-    #[cfg(feature = "cluster-async")]
-    pub(crate) write_backpressure_boundary: Option<usize>,
-    pub(crate) node_address_map: Option<HashMap<NodeAddress, NodeAddress>>,
-    #[cfg(feature = "cluster-async")]
-    pub(crate) max_connection_attempts: Option<NonZeroUsize>,
 }
 
 impl ClusterParams {
@@ -233,11 +219,6 @@ impl ClusterParams {
             },
             #[cfg(feature = "cluster-async")]
             connection_concurrency_limit: value.connection_concurrency_limit,
-            #[cfg(feature = "cluster-async")]
-            write_backpressure_boundary: value.write_backpressure_boundary,
-            node_address_map: value.node_address_map,
-            #[cfg(feature = "cluster-async")]
-            max_connection_attempts: value.max_connection_attempts,
         })
     }
 
@@ -271,8 +252,10 @@ impl ClusterClientBuilder {
     /// Creates a new `ClusterClientBuilder` with the provided initial_nodes.
     ///
     /// This is the same as `ClusterClient::builder(initial_nodes)`.
-    pub fn new<T: IntoConnectionInfo>(initial_nodes: impl IntoIterator<Item = T>) -> Self {
-        Self {
+    pub fn new<T: IntoConnectionInfo>(
+        initial_nodes: impl IntoIterator<Item = T>,
+    ) -> ClusterClientBuilder {
+        ClusterClientBuilder {
             initial_nodes: initial_nodes
                 .into_iter()
                 .map(|x| x.into_connection_info())
@@ -391,38 +374,38 @@ impl ClusterClientBuilder {
     }
 
     /// Sets password for the new ClusterClient.
-    pub fn password(mut self, password: impl AsRef<str>) -> Self {
+    pub fn password(mut self, password: impl AsRef<str>) -> ClusterClientBuilder {
         self.builder_params.password = Some(password.as_ref().into());
         self
     }
 
     /// Sets username for the new ClusterClient.
-    pub fn username(mut self, username: impl AsRef<str>) -> Self {
+    pub fn username(mut self, username: impl AsRef<str>) -> ClusterClientBuilder {
         self.builder_params.username = Some(username.as_ref().into());
         self
     }
 
     /// Sets number of retries for the new ClusterClient.
-    pub fn retries(mut self, retries: u32) -> Self {
+    pub fn retries(mut self, retries: u32) -> ClusterClientBuilder {
         self.builder_params.retries_configuration.number_of_retries = retries;
         self
     }
 
     /// Sets maximal wait time in millisceonds between retries for the new ClusterClient.
-    pub fn max_retry_wait(mut self, max_wait: u64) -> Self {
+    pub fn max_retry_wait(mut self, max_wait: u64) -> ClusterClientBuilder {
         self.builder_params.retries_configuration.max_wait_time = max_wait;
         self
     }
 
     /// Sets minimal wait time in millisceonds between retries for the new ClusterClient.
-    pub fn min_retry_wait(mut self, min_wait: u64) -> Self {
+    pub fn min_retry_wait(mut self, min_wait: u64) -> ClusterClientBuilder {
         self.builder_params.retries_configuration.min_wait_time = min_wait;
         self
     }
 
     /// Sets the factor and exponent base for the retry wait time.
     /// The formula for the wait is rand(min_wait_retry .. min(max_retry_wait , factor * exponent_base ^ retry))ms.
-    pub fn retry_wait_formula(mut self, factor: u64, exponent_base: u64) -> Self {
+    pub fn retry_wait_formula(mut self, factor: u64, exponent_base: u64) -> ClusterClientBuilder {
         self.builder_params.retries_configuration.factor = factor;
         self.builder_params.retries_configuration.exponent_base = exponent_base;
         self
@@ -432,7 +415,7 @@ impl ClusterClientBuilder {
     ///
     /// It is extracted from the first node of initial_nodes if not set.
     #[cfg(any(feature = "tls-native-tls", feature = "tls-rustls"))]
-    pub fn tls(mut self, tls: TlsMode) -> Self {
+    pub fn tls(mut self, tls: TlsMode) -> ClusterClientBuilder {
         self.builder_params.tls = Some(tls);
         self
     }
@@ -451,7 +434,7 @@ impl ClusterClientBuilder {
     /// trusted for use from any other. This introduces a significant
     /// vulnerability to man-in-the-middle attacks.
     #[cfg(any(feature = "tls-rustls-insecure", feature = "tls-native-tls"))]
-    pub fn danger_accept_invalid_hostnames(mut self, insecure: bool) -> Self {
+    pub fn danger_accept_invalid_hostnames(mut self, insecure: bool) -> ClusterClientBuilder {
         self.builder_params.danger_accept_invalid_hostnames = insecure;
         self
     }
@@ -473,7 +456,7 @@ impl ClusterClientBuilder {
     /// If `ClientTlsConfig` ( cert+key pair ) is not provided, then client-side authentication is not enabled.
     /// If `root_cert` is not provided, then system root certificates are used instead.
     #[cfg(feature = "tls-rustls")]
-    pub fn certs(mut self, certificates: TlsCertificates) -> Self {
+    pub fn certs(mut self, certificates: TlsCertificates) -> ClusterClientBuilder {
         if self.builder_params.tls.is_none() {
             self.builder_params.tls = Some(TlsMode::Secure);
         }
@@ -487,7 +470,7 @@ impl ClusterClientBuilder {
     /// Read queries will go to a random replica node and write queries will go to the
     /// primary node. If there are no replica nodes, then all queries will go to the primary node.
     #[deprecated(note = "Use `read_routing_strategy(RandomReplicaStrategy)` instead")]
-    pub fn read_from_replicas(mut self) -> Self {
+    pub fn read_from_replicas(mut self) -> ClusterClientBuilder {
         self.builder_params.read_routing_factory = Some(Arc::new(RandomReplicaStrategy));
         self
     }
@@ -541,12 +524,10 @@ impl ClusterClientBuilder {
     ///     .build()
     ///     .unwrap();
     /// ```
-    ///
-    /// Don't set this if you're using a managed cluster, such as Azure Managed Redis, as they don't support read routing.
     pub fn read_routing_strategy(
         mut self,
         strategy: impl ReadRoutingStrategyFactory + 'static,
-    ) -> Self {
+    ) -> ClusterClientBuilder {
         self.builder_params.read_routing_factory = Some(Arc::new(strategy));
         self
     }
@@ -554,7 +535,7 @@ impl ClusterClientBuilder {
     /// Enables timing out on slow connection time.
     ///
     /// If enabled, the cluster will only wait the given time on each connection attempt to each node.
-    pub fn connection_timeout(mut self, connection_timeout: Duration) -> Self {
+    pub fn connection_timeout(mut self, connection_timeout: Duration) -> ClusterClientBuilder {
         self.builder_params.connection_timeout = Some(connection_timeout);
         self
     }
@@ -564,7 +545,7 @@ impl ClusterClientBuilder {
     /// If enabled, the cluster will only wait the given time to each response from each node.
     /// This timeout is also used as the overall response timeout (including retries) unless
     /// overridden with [`Self::overall_response_timeout`].
-    pub fn response_timeout(mut self, response_timeout: Duration) -> Self {
+    pub fn response_timeout(mut self, response_timeout: Duration) -> ClusterClientBuilder {
         self.builder_params.response_timeout = Some(response_timeout);
         self
     }
@@ -581,13 +562,13 @@ impl ClusterClientBuilder {
     /// retries occur. Set to `Some(duration)` to use a specific overall timeout independent
     /// of `response_timeout`.
     #[cfg(feature = "cluster-async")]
-    pub fn overall_response_timeout(mut self, timeout: Option<Duration>) -> Self {
+    pub fn overall_response_timeout(mut self, timeout: Option<Duration>) -> ClusterClientBuilder {
         self.builder_params.overall_response_timeout = OverallResponseTimeout::Explicit(timeout);
         self
     }
 
     /// Sets the protocol with which the client should communicate with the server.
-    pub fn use_protocol(mut self, protocol: ProtocolVersion) -> Self {
+    pub fn use_protocol(mut self, protocol: ProtocolVersion) -> ClusterClientBuilder {
         self.builder_params.protocol = Some(protocol);
         self
     }
@@ -604,7 +585,7 @@ impl ClusterClientBuilder {
     /// Note that selecting a non-zero database in cluster mode requires a server that
     /// supports multiple databases in cluster mode; otherwise the connection handshake
     /// will fail.
-    pub fn database_id(mut self, database_id: i64) -> Self {
+    pub fn database_id(mut self, database_id: i64) -> ClusterClientBuilder {
         self.builder_params.database_id = Some(database_id);
         self
     }
@@ -639,30 +620,14 @@ impl ClusterClientBuilder {
     ///         Ok(())
     ///     });
     /// ```
-    pub fn push_sender(mut self, push_sender: impl AsyncPushSender) -> Self {
+    pub fn push_sender(mut self, push_sender: impl AsyncPushSender) -> ClusterClientBuilder {
         self.builder_params.async_push_sender = Some(Arc::new(push_sender));
         self
     }
 
     /// Set the behavior of the underlying TCP connections.
-    pub fn tcp_settings(mut self, tcp_settings: TcpSettings) -> Self {
+    pub fn tcp_settings(mut self, tcp_settings: TcpSettings) -> ClusterClientBuilder {
         self.builder_params.tcp_settings = tcp_settings;
-        self
-    }
-
-    /// Sets a node address map for remapping cluster node addresses.
-    ///
-    /// In TLS-enabled clusters, nodes may advertise IP addresses via `CLUSTER SLOTS`,
-    /// but TLS certificates are issued for domain names. This causes TLS verification
-    /// to fail because the certificate's Subject Alternative Names don't include
-    /// the IP address.
-    ///
-    /// The node address map lets you provide a mapping from the IP-based addresses
-    /// returned by `CLUSTER SLOTS` to the hostnames that match the TLS certificates.
-    /// The mapping is applied at connection time only — the internal slot map retains
-    /// the original addresses so that `MOVED`/`ASK` redirects continue to work.
-    pub fn node_address_map(mut self, map: HashMap<NodeAddress, NodeAddress>) -> Self {
-        self.builder_params.node_address_map = Some(map);
         self
     }
 
@@ -670,7 +635,7 @@ impl ClusterClientBuilder {
     ///
     /// The parameter resolver must implement the [`crate::io::AsyncDNSResolver`] trait.
     #[cfg(feature = "cluster-async")]
-    pub fn async_dns_resolver(mut self, resolver: impl AsyncDNSResolver) -> Self {
+    pub fn async_dns_resolver(mut self, resolver: impl AsyncDNSResolver) -> ClusterClientBuilder {
         self.builder_params.async_dns_resolver = Some(Arc::new(resolver));
         self
     }
@@ -701,20 +666,8 @@ impl ClusterClientBuilder {
     ///
     /// By default there is no limit.
     #[cfg(feature = "cluster-async")]
-    pub fn connection_concurrency_limit(mut self, limit: usize) -> Self {
+    pub fn connection_concurrency_limit(mut self, limit: usize) -> ClusterClientBuilder {
         self.builder_params.connection_concurrency_limit = Some(limit);
-        self
-    }
-
-    /// Sets the flush threshold (backpressure boundary) for each node connection's outbound write buffer.
-    ///
-    /// See [`crate::AsyncConnectionConfig::set_write_backpressure_boundary`] for full semantics.
-    /// This value is applied identically to every node connection in the cluster.
-    ///
-    /// When left unset, connections keep `tokio_util`'s default boundary.
-    #[cfg(feature = "cluster-async")]
-    pub fn write_backpressure_boundary(mut self, boundary: usize) -> Self {
-        self.builder_params.write_backpressure_boundary = Some(boundary);
         self
     }
 
@@ -724,21 +677,11 @@ impl ClusterClientBuilder {
     /// Each node connection will independently subscribe to the provider and automatically
     /// re-authenticate when new credentials are emitted.
     #[cfg(all(feature = "token-based-authentication", feature = "cluster-async"))]
-    pub fn set_credentials_provider<P>(mut self, provider: P) -> Self
+    pub fn set_credentials_provider<P>(mut self, provider: P) -> ClusterClientBuilder
     where
         P: StreamingCredentialsProvider + 'static,
     {
         self.builder_params.credentials_provider = Some(std::sync::Arc::new(provider));
-        self
-    }
-
-    /// Sets the maximum number of connection attempts to a cluster node before giving up, and removing the
-    /// node from the cluster. This is useful for clusters with a large number of nodes, where some nodes may be temporarily unavailable.
-    /// Removed nodes will be re-added to the cluster after a topology refresh.
-    /// If the value isn't set, reconnect attempts will continue indefinitely until the node is available again.
-    #[cfg(feature = "cluster-async")]
-    pub fn max_connection_attempts(mut self, max_attempts: NonZeroUsize) -> Self {
-        self.builder_params.max_connection_attempts = Some(max_attempts);
         self
     }
 }
@@ -762,7 +705,7 @@ impl ClusterClient {
     /// usernames, an error is returned.
     pub fn new<T: IntoConnectionInfo>(
         initial_nodes: impl IntoIterator<Item = T>,
-    ) -> RedisResult<Self> {
+    ) -> RedisResult<ClusterClient> {
         Self::builder(initial_nodes).build()
     }
 
@@ -984,7 +927,7 @@ mod tests {
     #[test]
     fn give_empty_initial_nodes() {
         let client = ClusterClient::new(Vec::<String>::new());
-        assert!(client.is_err());
+        assert!(client.is_err())
     }
 
     #[test]
@@ -1128,26 +1071,6 @@ mod tests {
         assert_eq!(
             client.cluster_params.connection_concurrency_limit,
             Some(128)
-        );
-    }
-
-    #[cfg(feature = "cluster-async")]
-    #[test]
-    fn write_backpressure_boundary_default() {
-        let client = ClusterClient::new(get_connection_data()).unwrap();
-        assert_eq!(client.cluster_params.write_backpressure_boundary, None);
-    }
-
-    #[cfg(feature = "cluster-async")]
-    #[test]
-    fn write_backpressure_boundary_custom() {
-        let client = ClusterClientBuilder::new(get_connection_data())
-            .write_backpressure_boundary(16 * 1024 * 1024)
-            .build()
-            .unwrap();
-        assert_eq!(
-            client.cluster_params.write_backpressure_boundary,
-            Some(16 * 1024 * 1024)
         );
     }
 

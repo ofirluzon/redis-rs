@@ -50,8 +50,8 @@ impl Client {
     /// Connects to a redis server and returns a client.  This does not
     /// actually open a connection yet but it does perform some basic
     /// checks on the URL that might make the operation fail.
-    pub fn open<T: IntoConnectionInfo>(params: T) -> RedisResult<Self> {
-        Ok(Self {
+    pub fn open<T: IntoConnectionInfo>(params: T) -> RedisResult<Client> {
+        Ok(Client {
             connection_info: params.into_connection_info()?,
         })
     }
@@ -161,7 +161,7 @@ impl Client {
     pub fn build_with_tls<C: IntoConnectionInfo>(
         conn_info: C,
         tls_certs: TlsCertificates,
-    ) -> RedisResult<Self> {
+    ) -> RedisResult<Client> {
         let connection_info = conn_info.into_connection_info()?;
 
         inner_build_with_tls(connection_info, &tls_certs)
@@ -195,8 +195,6 @@ pub struct AsyncConnectionConfig {
     pub(crate) dns_resolver: Option<std::sync::Arc<dyn AsyncDNSResolver>>,
     pub(crate) pipeline_buffer_size: Option<usize>,
     pub(crate) concurrency_limit: Option<usize>,
-    /// Flush threshold for the outbound write buffer; see [`AsyncConnectionConfig::set_write_backpressure_boundary`].
-    pub(crate) write_backpressure_boundary: Option<usize>,
     /// Optional credentials provider for dynamic authentication (e.g., token-based authentication)
     #[cfg(feature = "token-based-authentication")]
     pub(crate) credentials_provider: Option<std::sync::Arc<dyn StreamingCredentialsProvider>>,
@@ -214,7 +212,6 @@ impl Default for AsyncConnectionConfig {
             dns_resolver: Default::default(),
             pipeline_buffer_size: None,
             concurrency_limit: None,
-            write_backpressure_boundary: None,
             #[cfg(feature = "token-based-authentication")]
             credentials_provider: None,
         }
@@ -351,26 +348,6 @@ impl AsyncConnectionConfig {
     /// By default there is no limit.
     pub fn set_concurrency_limit(mut self, limit: usize) -> Self {
         self.concurrency_limit = Some(limit);
-        self
-    }
-
-    /// Sets the flush threshold (backpressure boundary) for the outbound write buffer.
-    ///
-    /// The multiplexed connection encodes commands into an in-memory buffer before
-    /// writing them to the socket. This value controls how many bytes may accumulate
-    /// in that buffer before the connection flushes to the socket and applies
-    /// backpressure to newly queued commands.
-    ///
-    /// With a small threshold the buffer flushes frequently and, when commands are
-    /// produced faster than the socket drains, it repeatedly grows by reallocation. A
-    /// larger threshold lets the buffer reach a stable capacity and batch larger writes,
-    /// trading a higher peak memory bound (roughly this many bytes per connection) for
-    /// fewer reallocations and syscalls. The buffer still grows lazily, so idle
-    /// connections do not hold this much memory.
-    ///
-    /// When left unset, the connection keeps `tokio_util`'s default boundary (8 KiB).
-    pub fn set_write_backpressure_boundary(mut self, boundary: usize) -> Self {
-        self.write_backpressure_boundary = Some(boundary);
         self
     }
 
@@ -716,19 +693,5 @@ mod test {
     fn test_async_connection_config_concurrency_limit_custom() {
         let config = AsyncConnectionConfig::new().set_concurrency_limit(128);
         assert_eq!(config.concurrency_limit, Some(128));
-    }
-
-    #[cfg(feature = "aio")]
-    #[test]
-    fn test_async_connection_config_write_backpressure_boundary_default() {
-        let config = AsyncConnectionConfig::new();
-        assert_eq!(config.write_backpressure_boundary, None);
-    }
-
-    #[cfg(feature = "aio")]
-    #[test]
-    fn test_async_connection_config_write_backpressure_boundary_custom() {
-        let config = AsyncConnectionConfig::new().set_write_backpressure_boundary(16 * 1024 * 1024);
-        assert_eq!(config.write_backpressure_boundary, Some(16 * 1024 * 1024));
     }
 }

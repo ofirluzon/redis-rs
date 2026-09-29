@@ -444,66 +444,6 @@ mod cluster {
         assert_eq!(value, Ok(Value::Nil));
     }
 
-    // Without a read-routing policy we must never send READONLY, since
-    // some Redis providers (e.g. Azure Managed Redis) reject it.
-    #[test]
-    fn test_cluster_without_read_routing_does_not_send_readonly() {
-        let name = "test_cluster_without_read_routing_does_not_send_readonly";
-
-        let ping_sent = Arc::new(atomic::AtomicBool::new(false));
-        {
-            let ping_sent_clone = ping_sent.clone();
-            let MockEnv { mut connection, .. } = MockEnv::new(name, move |cmd: &[u8], _| {
-                assert!(!contains_slice(cmd, b"READONLY"));
-                if contains_slice(cmd, b"PING") {
-                    ping_sent_clone.store(true, atomic::Ordering::SeqCst);
-                }
-                respond_startup(name, cmd)?;
-                Err(Ok(Value::Nil))
-            });
-
-            let value = cmd("GET").arg("test").query::<Value>(&mut connection);
-            assert_eq!(value, Ok(Value::Nil));
-        }
-
-        assert!(ping_sent.load(atomic::Ordering::SeqCst));
-    }
-
-    #[test]
-    fn test_cluster_with_read_routing_sends_readonly() {
-        let name = "test_cluster_with_read_routing_sends_readonly";
-
-        let readonly_sent = Arc::new(atomic::AtomicBool::new(false));
-        {
-            let readonly_sent_clone = readonly_sent.clone();
-            let MockEnv {
-                mut connection,
-                handler: _handler,
-                ..
-            } = MockEnv::with_client_builder(
-                ClusterClient::builder(vec![&*format!("redis://{name}")])
-                    .retries(0)
-                    .read_routing_strategy(RandomReplicaStrategy),
-                name,
-                move |cmd: &[u8], _| {
-                    if contains_slice(cmd, b"READONLY") {
-                        readonly_sent_clone.store(true, atomic::Ordering::SeqCst);
-                    }
-                    respond_startup(name, cmd)?;
-                    Err(Ok(Value::Nil))
-                },
-            );
-
-            let value = cmd("GET").arg("test").query::<Value>(&mut connection);
-            assert_eq!(value, Ok(Value::Nil));
-        }
-
-        assert!(
-            readonly_sent.load(atomic::Ordering::SeqCst),
-            "READONLY should be sent when read routing is enabled"
-        );
-    }
-
     #[test]
     fn test_cluster_retries() {
         let name = "tryagain";
@@ -1005,8 +945,13 @@ mod cluster {
                 let cmd_str = std::str::from_utf8(received_cmd).unwrap();
                 let results = ["foo", "bar", "baz"]
                     .iter()
-                    .filter(|&expected_key| cmd_str.contains(expected_key))
-                    .map(|expected_key| redis_value!(format!("{expected_key}-{port}")))
+                    .filter_map(|expected_key| {
+                        if cmd_str.contains(expected_key) {
+                            Some(redis_value!(format!("{expected_key}-{port}")))
+                        } else {
+                            None
+                        }
+                    })
                     .collect();
                 Err(Ok(Value::Array(results)))
             },
@@ -1189,7 +1134,7 @@ mod cluster {
         drop(cluster);
 
         // recreate cluster
-        let _cluster = RedisCluster::new(RedisClusterConfiguration {
+        let _cluster: RedisCluster = RedisCluster::new(RedisClusterConfiguration {
             ports,
             ..Default::default()
         });
@@ -1285,124 +1230,5 @@ mod cluster {
                 }
             }
         }
-    }
-
-    #[test]
-    fn test_cluster_node_address_map_remaps_connections() {
-        let cluster = TestClusterContext::new();
-
-        let mut address_map = std::collections::HashMap::new();
-        for server in cluster.cluster.iter_servers() {
-            if let Some((host, port)) = server.host_and_port() {
-                let original = redis::cluster::NodeAddress::new(host, port);
-                let mapped = redis::cluster::NodeAddress::new("localhost", port);
-                address_map.insert(original, mapped);
-            }
-        }
-
-        let initial_nodes: Vec<redis::ConnectionInfo> = cluster
-            .cluster
-            .iter_servers()
-            .map(|s| s.connection_info())
-            .collect();
-
-        let client = redis::cluster::ClusterClient::builder(initial_nodes)
-            .use_protocol(use_protocol())
-            .node_address_map(address_map)
-            .build()
-            .unwrap();
-
-        let mut con = client.get_connection().unwrap();
-
-        redis::cmd("SET")
-            .arg("{x}key1")
-            .arg(b"foo")
-            .exec(&mut con)
-            .unwrap();
-        redis::cmd("SET")
-            .arg(&["{x}key2", "bar"])
-            .exec(&mut con)
-            .unwrap();
-
-        assert_eq!(
-            redis::cmd("MGET")
-                .arg(&["{x}key1", "{x}key2"])
-                .query(&mut con),
-            Ok(("foo".to_string(), b"bar".to_vec()))
-        );
-    }
-
-    #[cfg(feature = "tls-rustls")]
-    #[test]
-    fn test_cluster_node_address_map_fixes_tls_hostname_mismatch() {
-        use redis_test::cluster::ClusterType;
-
-        if ClusterType::get_intended() != ClusterType::TcpTls {
-            return;
-        }
-
-        // Certs issued for "localhost" only (no IP SAN), so connecting via
-        // 127.0.0.1 will fail TLS verification without node_address_map.
-        let cluster = TestClusterContext::new_with_config(RedisClusterConfiguration {
-            tls_insecure: false,
-            certs_with_ip_alts: false,
-            dns_hostname: Some("localhost".to_string()),
-            ..Default::default()
-        });
-
-        let err = match cluster.client.get_connection() {
-            Ok(_) => panic!("connecting via IP address should fail TLS hostname verification"),
-            Err(err) => err,
-        };
-        assert!(
-            err.is_io_error(),
-            "expected a TLS/IO error from hostname verification failure, got: {err:?}"
-        );
-        let err_string = err.to_string();
-        assert!(
-            err_string.contains("certificate") || err_string.contains("NotValidForName"),
-            "expected a certificate hostname verification error, got: {err_string}"
-        );
-
-        let mut address_map = std::collections::HashMap::new();
-        for server in cluster.cluster.iter_servers() {
-            if let Some((host, port)) = server.host_and_port() {
-                address_map.insert(
-                    redis::cluster::NodeAddress::new(host, port),
-                    redis::cluster::NodeAddress::new("localhost", port),
-                );
-            }
-        }
-
-        let initial_nodes: Vec<redis::ConnectionInfo> = cluster
-            .cluster
-            .iter_servers()
-            .map(|s| s.connection_info())
-            .collect();
-
-        let mut builder = redis::cluster::ClusterClient::builder(initial_nodes)
-            .use_protocol(use_protocol())
-            .node_address_map(address_map);
-
-        if let Some(tls_file_paths) = &cluster.cluster.tls_paths {
-            builder = builder.certs(load_certs_from_file(tls_file_paths));
-        }
-
-        let client = builder.build().unwrap();
-        smoke_test_connection(client.get_connection().unwrap());
-    }
-}
-
-#[cfg(feature = "r2d2")]
-pub mod pool_tests {
-    use crate::support::*;
-    use r2d2::ManageConnection;
-
-    #[test]
-    fn is_valid_accepts_a_healthy_cluster_connection() {
-        let cluster = TestClusterContext::new();
-        let mut con = cluster.connection();
-
-        ManageConnection::is_valid(&cluster.client, &mut con).unwrap();
     }
 }

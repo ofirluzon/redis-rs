@@ -17,7 +17,6 @@ use std::str::from_utf8;
 use crate::errors::{RedisError, ServerError};
 
 /// Helper enum that is used to define expiry time
-#[derive(Clone)]
 #[non_exhaustive]
 pub enum Expiry {
     /// EX seconds -- Set the specified expire time, in seconds.
@@ -53,25 +52,24 @@ impl ToRedisArgs for SetExpiry {
     where
         W: ?Sized + RedisWrite,
     {
-        let mut buf = ::itoa::Buffer::new();
         match self {
-            Self::EX(secs) => {
+            SetExpiry::EX(secs) => {
                 out.write_arg(b"EX");
-                out.write_arg(buf.format(*secs).as_bytes());
+                out.write_arg(format!("{secs}").as_bytes());
             }
-            Self::PX(millis) => {
+            SetExpiry::PX(millis) => {
                 out.write_arg(b"PX");
-                out.write_arg(buf.format(*millis).as_bytes());
+                out.write_arg(format!("{millis}").as_bytes());
             }
-            Self::EXAT(unix_time) => {
+            SetExpiry::EXAT(unix_time) => {
                 out.write_arg(b"EXAT");
-                out.write_arg(buf.format(*unix_time).as_bytes());
+                out.write_arg(format!("{unix_time}").as_bytes());
             }
-            Self::PXAT(unix_time) => {
+            SetExpiry::PXAT(unix_time) => {
                 out.write_arg(b"PXAT");
-                out.write_arg(buf.format(*unix_time).as_bytes());
+                out.write_arg(format!("{unix_time}").as_bytes());
             }
-            Self::KEEPTTL => {
+            SetExpiry::KEEPTTL => {
                 out.write_arg(b"KEEPTTL");
             }
         }
@@ -94,10 +92,10 @@ impl ToRedisArgs for ExistenceCheck {
         W: ?Sized + RedisWrite,
     {
         match self {
-            Self::NX => {
+            ExistenceCheck::NX => {
                 out.write_arg(b"NX");
             }
-            Self::XX => {
+            ExistenceCheck::XX => {
                 out.write_arg(b"XX");
             }
         }
@@ -120,8 +118,8 @@ impl ToRedisArgs for FieldExistenceCheck {
         W: ?Sized + RedisWrite,
     {
         match self {
-            Self::FNX => out.write_arg(b"FNX"),
-            Self::FXX => out.write_arg(b"FXX"),
+            FieldExistenceCheck::FNX => out.write_arg(b"FNX"),
+            FieldExistenceCheck::FXX => out.write_arg(b"FXX"),
         }
     }
 }
@@ -155,22 +153,22 @@ pub enum Value {
     BulkString(Vec<u8>),
     /// A response containing an array with more data. This is generally used by redis
     /// to express nested structures.
-    Array(Vec<Self>),
+    Array(Vec<Value>),
     /// A simple string response, without line breaks and not binary safe.
     SimpleString(String),
     /// A status response which represents the string "OK".
     Okay,
     /// Unordered key,value list from the server. Use `as_map_iter` function.
-    Map(Vec<(Self, Self)>),
+    Map(Vec<(Value, Value)>),
     /// Attribute value from the server. Client will give data instead of whole Attribute type.
     Attribute {
         /// Data that attributes belong to.
-        data: Box<Self>,
+        data: Box<Value>,
         /// Key,Value list of attributes.
-        attributes: Vec<(Self, Self)>,
+        attributes: Vec<(Value, Value)>,
     },
     /// Unordered set value from the server.
-    Set(Vec<Self>),
+    Set(Vec<Value>),
     /// A floating number response from the server.
     Double(f64),
     /// A boolean response from the server.
@@ -193,7 +191,7 @@ pub enum Value {
         /// Push Kind
         kind: PushKind,
         /// Remaining data from push message
-        data: Vec<Self>,
+        data: Vec<Value>,
     },
     /// Represents an error message from the server
     ServerError(ServerError),
@@ -232,7 +230,7 @@ impl ValueComparison {
     /// For SET: Sets the key only if its current value matches. Non-existent keys are not created.
     /// For DEL_EX: Deletes the key only if its current value matches. Non-existent keys are ignored.
     pub fn ifeq(value: impl ToSingleRedisArg) -> Self {
-        Self::IFEQ(Self::arg_to_string(value))
+        ValueComparison::IFEQ(Self::arg_to_string(value))
     }
 
     /// Create a new IFNE (if not equal) comparison
@@ -242,7 +240,7 @@ impl ValueComparison {
     /// For SET: Sets the key only if its current value doesn't match. Non-existent keys are created.
     /// For DEL_EX: Deletes the key only if its current value doesn't match. Non-existent keys are ignored.
     pub fn ifne(value: impl ToSingleRedisArg) -> Self {
-        Self::IFNE(Self::arg_to_string(value))
+        ValueComparison::IFNE(Self::arg_to_string(value))
     }
 
     /// Create a new IFDEQ (if digest equal) comparison
@@ -254,7 +252,7 @@ impl ValueComparison {
     ///
     /// Use [`calculate_value_digest`] to compute the digest of a value.
     pub fn ifdeq(digest: impl ToSingleRedisArg) -> Self {
-        Self::IFDEQ(Self::arg_to_string(digest))
+        ValueComparison::IFDEQ(Self::arg_to_string(digest))
     }
 
     /// Create a new IFDNE (if digest not equal) comparison
@@ -266,7 +264,7 @@ impl ValueComparison {
     ///
     /// Use [`calculate_value_digest`] to compute the digest of a value.
     pub fn ifdne(digest: impl ToSingleRedisArg) -> Self {
-        Self::IFDNE(Self::arg_to_string(digest))
+        ValueComparison::IFDNE(Self::arg_to_string(digest))
     }
 
     fn arg_to_string(value: impl ToSingleRedisArg) -> String {
@@ -281,19 +279,19 @@ impl ToRedisArgs for ValueComparison {
         W: ?Sized + RedisWrite,
     {
         match self {
-            Self::IFEQ(value) => {
+            ValueComparison::IFEQ(value) => {
                 out.write_arg(b"IFEQ");
                 out.write_arg(value.as_bytes());
             }
-            Self::IFNE(value) => {
+            ValueComparison::IFNE(value) => {
                 out.write_arg(b"IFNE");
                 out.write_arg(value.as_bytes());
             }
-            Self::IFDEQ(digest) => {
+            ValueComparison::IFDEQ(digest) => {
                 out.write_arg(b"IFDEQ");
                 out.write_arg(digest.as_bytes());
             }
-            Self::IFDNE(digest) => {
+            ValueComparison::IFDNE(digest) => {
                 out.write_arg(b"IFDNE");
                 out.write_arg(digest.as_bytes());
             }
@@ -348,12 +346,12 @@ impl PushKind {
     pub(crate) fn has_reply(&self) -> bool {
         matches!(
             self,
-            &Self::Unsubscribe
-                | &Self::PUnsubscribe
-                | &Self::SUnsubscribe
-                | &Self::Subscribe
-                | &Self::PSubscribe
-                | &Self::SSubscribe
+            &PushKind::Unsubscribe
+                | &PushKind::PUnsubscribe
+                | &PushKind::SUnsubscribe
+                | &PushKind::Subscribe
+                | &PushKind::PSubscribe
+                | &PushKind::SSubscribe
         )
     }
 }
@@ -361,9 +359,9 @@ impl PushKind {
 impl fmt::Display for VerbatimFormat {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Markdown => write!(f, "mkd"),
-            Self::Unknown(val) => write!(f, "{val}"),
-            Self::Text => write!(f, "txt"),
+            VerbatimFormat::Markdown => write!(f, "mkd"),
+            VerbatimFormat::Unknown(val) => write!(f, "{val}"),
+            VerbatimFormat::Text => write!(f, "txt"),
         }
     }
 }
@@ -371,18 +369,18 @@ impl fmt::Display for VerbatimFormat {
 impl fmt::Display for PushKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Other(kind) => write!(f, "{kind}"),
-            Self::Invalidate => write!(f, "invalidate"),
-            Self::Message => write!(f, "message"),
-            Self::PMessage => write!(f, "pmessage"),
-            Self::SMessage => write!(f, "smessage"),
-            Self::Unsubscribe => write!(f, "unsubscribe"),
-            Self::PUnsubscribe => write!(f, "punsubscribe"),
-            Self::SUnsubscribe => write!(f, "sunsubscribe"),
-            Self::Subscribe => write!(f, "subscribe"),
-            Self::PSubscribe => write!(f, "psubscribe"),
-            Self::SSubscribe => write!(f, "ssubscribe"),
-            Self::Disconnection => write!(f, "disconnection"),
+            PushKind::Other(kind) => write!(f, "{kind}"),
+            PushKind::Invalidate => write!(f, "invalidate"),
+            PushKind::Message => write!(f, "message"),
+            PushKind::PMessage => write!(f, "pmessage"),
+            PushKind::SMessage => write!(f, "smessage"),
+            PushKind::Unsubscribe => write!(f, "unsubscribe"),
+            PushKind::PUnsubscribe => write!(f, "punsubscribe"),
+            PushKind::SUnsubscribe => write!(f, "sunsubscribe"),
+            PushKind::Subscribe => write!(f, "subscribe"),
+            PushKind::PSubscribe => write!(f, "psubscribe"),
+            PushKind::SSubscribe => write!(f, "ssubscribe"),
+            PushKind::Disconnection => write!(f, "disconnection"),
         }
     }
 }
@@ -425,18 +423,18 @@ impl Iterator for OwnedMapIter {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self {
-            Self::Array(iter) => Some((iter.next()?, iter.next()?)),
-            Self::Map(iter) => iter.next(),
+            OwnedMapIter::Array(iter) => Some((iter.next()?, iter.next()?)),
+            OwnedMapIter::Map(iter) => iter.next(),
         }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
         match self {
-            Self::Array(iter) => {
+            OwnedMapIter::Array(iter) => {
                 let (low, high) = iter.size_hint();
                 (low / 2, high.map(|h| h / 2))
             }
-            Self::Map(iter) => iter.size_hint(),
+            OwnedMapIter::Map(iter) => iter.size_hint(),
         }
     }
 }
@@ -455,31 +453,33 @@ impl Value {
     /// array response.
     pub fn looks_like_cursor(&self) -> bool {
         match *self {
-            Self::Array(ref items) => {
+            Value::Array(ref items) => {
                 if items.len() != 2 {
                     return false;
                 }
-                matches!(items[0], Self::BulkString(_)) && matches!(items[1], Self::Array(_))
+                matches!(items[0], Value::BulkString(_)) && matches!(items[1], Value::Array(_))
             }
             _ => false,
         }
     }
 
     /// Returns an `&[Value]` if `self` is compatible with a sequence type
-    pub fn as_sequence(&self) -> Option<&[Self]> {
+    pub fn as_sequence(&self) -> Option<&[Value]> {
         match self {
-            Self::Array(items) | Self::Set(items) => Some(&items[..]),
-            Self::Nil => Some(&[]),
+            Value::Array(items) => Some(&items[..]),
+            Value::Set(items) => Some(&items[..]),
+            Value::Nil => Some(&[]),
             _ => None,
         }
     }
 
     /// Returns a `Vec<Value>` if `self` is compatible with a sequence type,
     /// otherwise returns `Err(self)`.
-    pub fn into_sequence(self) -> Result<Vec<Self>, Self> {
+    pub fn into_sequence(self) -> Result<Vec<Value>, Value> {
         match self {
-            Self::Array(items) | Self::Set(items) => Ok(items),
-            Self::Nil => Ok(vec![]),
+            Value::Array(items) => Ok(items),
+            Value::Set(items) => Ok(items),
+            Value::Nil => Ok(vec![]),
             _ => Err(self),
         }
     }
@@ -487,24 +487,30 @@ impl Value {
     /// Returns an iterator of `(&Value, &Value)` if `self` is compatible with a map type
     pub fn as_map_iter(&self) -> Option<MapIter<'_>> {
         match self {
-            Self::Array(items) => (items.len() % 2 == 0).then(|| MapIter::Array(items.iter())),
-            Self::Map(items) => Some(MapIter::Map(items.iter())),
+            Value::Array(items) => {
+                if items.len() % 2 == 0 {
+                    Some(MapIter::Array(items.iter()))
+                } else {
+                    None
+                }
+            }
+            Value::Map(items) => Some(MapIter::Map(items.iter())),
             _ => None,
         }
     }
 
     /// Returns an iterator of `(Value, Value)` if `self` is compatible with a map type.
     /// If not, returns `Err(self)`.
-    pub fn into_map_iter(self) -> Result<OwnedMapIter, Self> {
+    pub fn into_map_iter(self) -> Result<OwnedMapIter, Value> {
         match self {
-            Self::Array(items) => {
+            Value::Array(items) => {
                 if items.len() % 2 == 0 {
                     Ok(OwnedMapIter::Array(items.into_iter()))
                 } else {
-                    Err(Self::Array(items))
+                    Err(Value::Array(items))
                 }
             }
-            Self::Map(items) => Ok(OwnedMapIter::Map(items.into_iter())),
+            Value::Map(items) => Ok(OwnedMapIter::Map(items.into_iter())),
             _ => Err(self),
         }
     }
@@ -517,14 +523,14 @@ impl Value {
             Self::Attribute { data, attributes } => {
                 let data = Box::new((*data).extract_error()?);
                 let attributes = Self::extract_error_map(attributes)?;
-                Ok(Self::Attribute { data, attributes })
+                Ok(Value::Attribute { data, attributes })
             }
             Self::Set(set) => Ok(Self::Set(Self::extract_error_vec(set)?)),
             Self::Push { kind, data } => Ok(Self::Push {
                 kind,
                 data: Self::extract_error_vec(data)?,
             }),
-            Self::ServerError(err) => Err(err.into()),
+            Value::ServerError(err) => Err(err.into()),
             _ => Ok(self),
         }
     }
@@ -545,8 +551,9 @@ impl Value {
 
     fn is_collection_of_len(&self, len: usize) -> bool {
         match self {
-            Self::Array(values) | Self::Set(values) => values.len() == len,
-            Self::Map(items) => items.len() * 2 == len,
+            Value::Array(values) => values.len() == len,
+            Value::Map(items) => items.len() * 2 == len,
+            Value::Set(values) => values.len() == len,
             _ => false,
         }
     }
@@ -558,36 +565,36 @@ impl Value {
 }
 
 impl fmt::Debug for Value {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::Nil => write!(f, "nil"),
-            Self::Int(val) => write!(f, "int({val:?})"),
-            Self::BulkString(ref val) => match from_utf8(val) {
-                Ok(x) => write!(f, "bulk-string('{x:?}')"),
-                Err(_) => write!(f, "binary-data({val:?})"),
+            Value::Nil => write!(fmt, "nil"),
+            Value::Int(val) => write!(fmt, "int({val:?})"),
+            Value::BulkString(ref val) => match from_utf8(val) {
+                Ok(x) => write!(fmt, "bulk-string('{x:?}')"),
+                Err(_) => write!(fmt, "binary-data({val:?})"),
             },
-            Self::Array(ref values) => write!(f, "array({values:?})"),
-            Self::Push { ref kind, ref data } => write!(f, "push({kind:?}, {data:?})"),
-            Self::Okay => write!(f, "ok"),
-            Self::SimpleString(ref s) => write!(f, "simple-string({s:?})"),
-            Self::Map(ref values) => write!(f, "map({values:?})"),
-            Self::Attribute {
+            Value::Array(ref values) => write!(fmt, "array({values:?})"),
+            Value::Push { ref kind, ref data } => write!(fmt, "push({kind:?}, {data:?})"),
+            Value::Okay => write!(fmt, "ok"),
+            Value::SimpleString(ref s) => write!(fmt, "simple-string({s:?})"),
+            Value::Map(ref values) => write!(fmt, "map({values:?})"),
+            Value::Attribute {
                 ref data,
                 attributes: _,
-            } => write!(f, "attribute({data:?})"),
-            Self::Set(ref values) => write!(f, "set({values:?})"),
-            Self::Double(ref d) => write!(f, "double({d:?})"),
-            Self::Boolean(ref b) => write!(f, "boolean({b:?})"),
-            Self::VerbatimString {
+            } => write!(fmt, "attribute({data:?})"),
+            Value::Set(ref values) => write!(fmt, "set({values:?})"),
+            Value::Double(ref d) => write!(fmt, "double({d:?})"),
+            Value::Boolean(ref b) => write!(fmt, "boolean({b:?})"),
+            Value::VerbatimString {
                 ref format,
                 ref text,
             } => {
-                write!(f, "verbatim-string({format:?},{text:?})")
+                write!(fmt, "verbatim-string({format:?},{text:?})")
             }
-            Self::BigNumber(ref m) => write!(f, "big-number({m:?})"),
-            Self::ServerError(ref err) => match err.details() {
-                Some(details) => write!(f, "Server error: `{}: {details}`", err.code()),
-                None => write!(f, "Server error: `{}`", err.code()),
+            Value::BigNumber(ref m) => write!(fmt, "big-number({m:?})"),
+            Value::ServerError(ref err) => match err.details() {
+                Some(details) => write!(fmt, "Server error: `{}: {details}`", err.code()),
+                None => write!(fmt, "Server error: `{}`", err.code()),
             },
         }
     }
@@ -597,17 +604,17 @@ impl fmt::Debug for Value {
 pub type RedisResult<T> = Result<T, RedisError>;
 
 impl<T: FromRedisValue> FromRedisValue for RedisResult<T> {
-    fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
-        match v {
+    fn from_redis_value_ref(value: &Value) -> Result<Self, ParsingError> {
+        match value {
             Value::ServerError(err) => Ok(Err(err.clone().into())),
-            _ => from_redis_value_ref(v).map(|result| Ok(result)),
+            _ => from_redis_value_ref(value).map(|result| Ok(result)),
         }
     }
 
-    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
-        match v {
+    fn from_redis_value(value: Value) -> Result<Self, ParsingError> {
+        match value {
             Value::ServerError(err) => Ok(Err(err.into())),
-            _ => from_redis_value(v).map(|result| Ok(result)),
+            _ => from_redis_value(value).map(|result| Ok(result)),
         }
     }
 }
@@ -652,7 +659,7 @@ impl InfoDict {
     /// the INFO command.  Each line is a key, value pair with the
     /// key and value separated by a colon (`:`).  Lines starting with a
     /// hash (`#`) are ignored.
-    pub fn new(kvpairs: &str) -> Self {
+    pub fn new(kvpairs: &str) -> InfoDict {
         let mut map = HashMap::new();
         for line in kvpairs.lines() {
             if line.is_empty() || line.starts_with('#') {
@@ -665,7 +672,7 @@ impl InfoDict {
             };
             map.insert(k, Value::SimpleString(v));
         }
-        Self { map }
+        InfoDict { map }
     }
 
     /// Fetches a value by key and converts it into the given type.
@@ -761,16 +768,13 @@ impl FromRedisValue for ReplicaInfo {
             Err(v) => crate::errors::invalid_type_error!(v, "Replica response should be an array"),
         };
         if v.len() < 3 {
-            crate::errors::invalid_type_error!(
-                v,
-                "Replica array is too short, expected 3 elements"
-            );
+            crate::errors::invalid_type_error!(v, "Replica array is too short, expected 3 elements")
         }
         let mut v = v.into_iter();
         let ip = from_redis_value(v.next().expect("len was checked"))?;
         let port = from_redis_value(v.next().expect("len was checked"))?;
         let offset = from_redis_value(v.next().expect("len was checked"))?;
-        Ok(Self {
+        Ok(ReplicaInfo {
             ip,
             port,
             replication_offset: offset,
@@ -792,13 +796,13 @@ impl FromRedisValue for Role {
             crate::errors::invalid_type_error!(
                 v,
                 "Role array is too short, expected at least 2 elements"
-            );
+            )
         }
         match &v[0] {
             Value::BulkString(role) => match role.as_slice() {
-                b"master" => Self::new_primary(v),
-                b"slave" => Self::new_replica(v),
-                b"sentinel" => Self::new_sentinel(v),
+                b"master" => Role::new_primary(v),
+                b"slave" => Role::new_replica(v),
+                b"sentinel" => Role::new_sentinel(v),
                 _ => crate::errors::invalid_type_error!(
                     v,
                     "Role type is not master, slave or sentinel"
@@ -815,7 +819,7 @@ impl Role {
             crate::errors::invalid_type_error!(
                 values,
                 "Role primary response too short, expected 3 elements"
-            );
+            )
         }
 
         let mut values = values.into_iter();
@@ -824,7 +828,7 @@ impl Role {
         let replication_offset = from_redis_value(values.next().expect("len was checked"))?;
         let replicas = from_redis_value(values.next().expect("len was checked"))?;
 
-        Ok(Self::Primary {
+        Ok(Role::Primary {
             replication_offset,
             replicas,
         })
@@ -835,7 +839,7 @@ impl Role {
             crate::errors::invalid_type_error!(
                 values,
                 "Role replica response too short, expected 5 elements"
-            );
+            )
         }
 
         let mut values = values.into_iter();
@@ -846,7 +850,7 @@ impl Role {
         let replication_state = from_redis_value(values.next().expect("len was checked"))?;
         let data_received = from_redis_value(values.next().expect("len was checked"))?;
 
-        Ok(Self::Replica {
+        Ok(Role::Replica {
             primary_ip,
             primary_port,
             replication_state,
@@ -859,11 +863,11 @@ impl Role {
             crate::errors::invalid_type_error!(
                 values,
                 "Role sentinel response too short, expected at least 2 elements"
-            );
+            )
         }
         let second_val = values.into_iter().nth(1).expect("len was checked");
         let primary_names = from_redis_value(second_val)?;
-        Ok(Self::Sentinel { primary_names })
+        Ok(Role::Sentinel { primary_names })
     }
 }
 
@@ -874,7 +878,7 @@ pub trait RedisWrite {
 
     /// Accepts a serialized redis command.
     fn write_arg_fmt(&mut self, arg: impl fmt::Display) {
-        self.write_arg(arg.to_string().as_bytes());
+        self.write_arg(arg.to_string().as_bytes())
     }
 
     /// Appends an empty argument to the command, and returns a
@@ -984,7 +988,7 @@ pub trait RedisWrite {
         }
         impl Drop for Wrapper<'_> {
             fn drop(&mut self) {
-                self.writer.write_all(&self.buf).unwrap();
+                self.writer.write_all(&self.buf).unwrap()
             }
         }
 
@@ -1001,7 +1005,7 @@ impl RedisWrite for Vec<Vec<u8>> {
     }
 
     fn write_arg_fmt(&mut self, arg: impl fmt::Display) {
-        self.push(arg.to_string().into_bytes());
+        self.push(arg.to_string().into_bytes())
     }
 
     fn writer_for_next_arg(&mut self) -> impl io::Write + '_ {
@@ -1078,7 +1082,7 @@ pub trait ToRedisArgs: Sized {
     where
         W: ?Sized + RedisWrite,
     {
-        Self::make_arg_iter_ref(items.iter(), out);
+        Self::make_arg_iter_ref(items.iter(), out)
     }
 
     /// This only exists internally as a workaround for the lack of
@@ -1171,17 +1175,17 @@ impl ToRedisArgs for u8 {
     {
         let mut buf = ::itoa::Buffer::new();
         let s = buf.format(*self);
-        out.write_arg(s.as_bytes());
+        out.write_arg(s.as_bytes())
     }
 
-    fn write_args_from_slice<W>(items: &[Self], out: &mut W)
+    fn write_args_from_slice<W>(items: &[u8], out: &mut W)
     where
         W: ?Sized + RedisWrite,
     {
         out.write_arg(items);
     }
 
-    fn is_single_vec_arg(_items: &[Self]) -> bool {
+    fn is_single_vec_arg(_items: &[u8]) -> bool {
         true
     }
 }
@@ -1250,7 +1254,7 @@ impl ToRedisArgs for bool {
     where
         W: ?Sized + RedisWrite,
     {
-        out.write_arg(if *self { b"1" } else { b"0" });
+        out.write_arg(if *self { b"1" } else { b"0" })
     }
 }
 
@@ -1261,7 +1265,7 @@ impl ToRedisArgs for String {
     where
         W: ?Sized + RedisWrite,
     {
-        out.write_arg(self.as_bytes());
+        out.write_arg(self.as_bytes())
     }
 }
 impl ToSingleRedisArg for String {}
@@ -1271,7 +1275,7 @@ impl ToRedisArgs for &str {
     where
         W: ?Sized + RedisWrite,
     {
-        out.write_arg(self.as_bytes());
+        out.write_arg(self.as_bytes())
     }
 }
 
@@ -1546,7 +1550,7 @@ impl<T: ToRedisArgs, const N: usize> ToRedisArgs for &[T; N] {
     where
         W: ?Sized + RedisWrite,
     {
-        ToRedisArgs::write_args_from_slice(self.as_slice(), out);
+        ToRedisArgs::write_args_from_slice(self.as_slice(), out)
     }
 
     fn num_of_args(&self) -> usize {
@@ -1579,24 +1583,24 @@ fn vec_to_array<T, const N: usize>(
 }
 
 impl<T: FromRedisValue, const N: usize> FromRedisValue for [T; N] {
-    fn from_redis_value_ref(v: &Value) -> Result<[T; N], ParsingError> {
-        match *v {
+    fn from_redis_value_ref(value: &Value) -> Result<[T; N], ParsingError> {
+        match *value {
             Value::BulkString(ref bytes) => match FromRedisValue::from_byte_slice(bytes) {
-                Some(items) => vec_to_array(items, v),
+                Some(items) => vec_to_array(items, value),
                 None => {
                     let msg = format!(
                         "Conversion to Array[{}; {N}] failed",
                         std::any::type_name::<T>()
                     );
-                    crate::errors::invalid_type_error!(v, msg)
+                    crate::errors::invalid_type_error!(value, msg)
                 }
             },
             Value::Array(ref items) => {
                 let items = FromRedisValue::from_redis_value_refs(items)?;
-                vec_to_array(items, v)
+                vec_to_array(items, value)
             }
-            Value::Nil => vec_to_array(vec![], v),
-            _ => crate::errors::invalid_type_error!(v, "Response type not array compatible"),
+            Value::Nil => vec_to_array(vec![], value),
+            _ => crate::errors::invalid_type_error!(value, "Response type not array compatible"),
         }
     }
 
@@ -1741,8 +1745,8 @@ macro_rules! from_redis_value_for_num {
 }
 
 impl FromRedisValue for u8 {
-    fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
-        from_redis_value_for_num_internal!(Self, v)
+    fn from_redis_value_ref(v: &Value) -> Result<u8, ParsingError> {
+        from_redis_value_for_num_internal!(u8, v)
     }
 
     fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
@@ -1750,10 +1754,10 @@ impl FromRedisValue for u8 {
     }
 
     // this hack allows us to specialize Vec<u8> to work with binary data.
-    fn from_byte_slice(vec: &[u8]) -> Option<Vec<Self>> {
+    fn from_byte_slice(vec: &[u8]) -> Option<Vec<u8>> {
         Some(vec.to_vec())
     }
-    fn from_byte_vec(vec: Vec<u8>) -> Result<Vec<Self>, ParsingError> {
+    fn from_byte_vec(vec: Vec<u8>) -> Result<Vec<u8>, ParsingError> {
         Ok(vec)
     }
 }
@@ -1826,7 +1830,7 @@ from_redis_value_for_bignum!(num_bigint::BigInt);
 from_redis_value_for_bignum!(num_bigint::BigUint);
 
 impl FromRedisValue for bool {
-    fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
+    fn from_redis_value_ref(v: &Value) -> Result<bool, ParsingError> {
         let v = get_inner_value(v);
         match *v {
             Value::Nil => Ok(false),
@@ -1861,21 +1865,21 @@ impl FromRedisValue for bool {
 }
 
 impl FromRedisValue for CString {
-    fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
+    fn from_redis_value_ref(v: &Value) -> Result<CString, ParsingError> {
         let v = get_inner_value(v);
         match *v {
-            Value::BulkString(ref bytes) => Ok(Self::new(bytes.as_slice())?),
-            Value::Okay => Ok(Self::new("OK")?),
-            Value::SimpleString(ref val) => Ok(Self::new(val.as_bytes())?),
+            Value::BulkString(ref bytes) => Ok(CString::new(bytes.as_slice())?),
+            Value::Okay => Ok(CString::new("OK")?),
+            Value::SimpleString(ref val) => Ok(CString::new(val.as_bytes())?),
             _ => crate::errors::invalid_type_error!(v, "Response type not CString compatible."),
         }
     }
-    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
+    fn from_redis_value(v: Value) -> Result<CString, ParsingError> {
         let v = get_owned_inner_value(v);
         match v {
-            Value::BulkString(bytes) => Ok(Self::new(bytes)?),
-            Value::Okay => Ok(Self::new("OK")?),
-            Value::SimpleString(val) => Ok(Self::new(val)?),
+            Value::BulkString(bytes) => Ok(CString::new(bytes)?),
+            Value::Okay => Ok(CString::new("OK")?),
+            Value::SimpleString(val) => Ok(CString::new(val)?),
             _ => crate::errors::invalid_type_error!(v, "Response type not CString compatible."),
         }
     }
@@ -2123,7 +2127,7 @@ impl_from_redis_value_for_set!(
 );
 
 impl FromRedisValue for Value {
-    fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
+    fn from_redis_value_ref(v: &Value) -> Result<Value, ParsingError> {
         Ok(v.clone())
     }
 
@@ -2147,7 +2151,7 @@ impl FromRedisValue for () {
 
 macro_rules! from_redis_value_for_tuple {
     () => ();
-    ($arity:expr, $(#[$meta:meta],)*$($name:ident,)+) => (
+    ($(#[$meta:meta],)*$($name:ident,)+) => (
         $(#[$meta])*
         impl<$($name: FromRedisValue),*> FromRedisValue for ($($name,)*) {
             // we have local variables named T1 as dummies and those
@@ -2155,9 +2159,13 @@ macro_rules! from_redis_value_for_tuple {
             #[allow(non_snake_case, unused_variables)]
             fn from_redis_value_ref(v: &Value) -> Result<($($name,)*), ParsingError> {
                 let v = get_inner_value(v);
+                // hacky way to count the tuple size
+                let mut n = 0;
+                $(let $name = (); n += 1;)*
+
                 match *v {
                     Value::Array(ref items) => {
-                        if items.len() != $arity {
+                        if items.len() != n {
                             crate::errors::invalid_type_error!(v, "Array response of wrong dimension")
                         }
 
@@ -2168,7 +2176,7 @@ macro_rules! from_redis_value_for_tuple {
                     }
 
                     Value::Set(ref items) => {
-                        if items.len() != $arity {
+                        if items.len() != n {
                             crate::errors::invalid_type_error!(v, "Set response of wrong dimension")
                         }
 
@@ -2179,7 +2187,7 @@ macro_rules! from_redis_value_for_tuple {
                     }
 
                     Value::Map(ref items) => {
-                        if $arity != items.len() * 2 {
+                        if n != items.len() * 2 {
                             crate::errors::invalid_type_error!(v, "Map response of wrong dimension")
                         }
 
@@ -2198,9 +2206,12 @@ macro_rules! from_redis_value_for_tuple {
             #[allow(non_snake_case, unused_variables)]
             fn from_redis_value(v: Value) -> Result<($($name,)*), ParsingError> {
                 let v = get_owned_inner_value(v);
+                // hacky way to count the tuple size
+                let mut n = 0;
+                $(let $name = (); n += 1;)*
                 match v {
                     Value::Array(mut items) => {
-                        if items.len() != $arity {
+                        if items.len() != n {
                             crate::errors::invalid_type_error!(Value::Array(items), "Array response of wrong dimension")
                         }
 
@@ -2212,7 +2223,7 @@ macro_rules! from_redis_value_for_tuple {
                     }
 
                     Value::Set(mut items) => {
-                        if items.len() != $arity {
+                        if items.len() != n {
                             crate::errors::invalid_type_error!(Value::Array(items), "Set response of wrong dimension")
                         }
 
@@ -2224,7 +2235,7 @@ macro_rules! from_redis_value_for_tuple {
                     }
 
                     Value::Map(items) => {
-                        if $arity != items.len() * 2 {
+                        if n != items.len() * 2 {
                             crate::errors::invalid_type_error!(Value::Map(items), "Map response of wrong dimension")
                         }
 
@@ -2241,25 +2252,27 @@ macro_rules! from_redis_value_for_tuple {
 
             #[allow(non_snake_case, unused_variables)]
             fn from_redis_value_refs(items: &[Value]) -> Result<Vec<($($name,)*)>, ParsingError> {
+                // hacky way to count the tuple size
+                let mut n = 0;
+                $(let $name = (); n += 1;)*
                 if items.len() == 0 {
                     return Ok(vec![]);
                 }
 
-                if items.iter().all(|item| item.is_collection_of_len($arity)) {
+                if items.iter().all(|item| item.is_collection_of_len(n)) {
                     return items.iter().map(|item| from_redis_value_ref(item)).collect();
                 }
 
-                let mut rv = Vec::with_capacity(items.len() / $arity);
+                let mut rv = Vec::with_capacity(items.len() / n);
                 if let [$($name),*] = items {
                     rv.push(($(from_redis_value_ref($name)?,)*));
                     return Ok(rv);
                 }
-                let (chunks, remainder) = items.as_chunks::<$arity>();
-                if !remainder.is_empty() {
-                    return Err(format!("Vector with length {} doesn't have arity of {}", items.len(), $arity).into());
-                }
-                for [$($name),*] in chunks {
-                    rv.push(($(from_redis_value_ref($name)?,)*));
+                for chunk in items.chunks(n) {
+                    match chunk {
+                        [$($name),*] => rv.push(($(from_redis_value_ref($name)?,)*)),
+                         _ => return Err(format!("Vector of length {} doesn't have arity of {n}", items.len()).into()),
+                    }
                 }
                 Ok(rv)
             }
@@ -2272,52 +2285,57 @@ macro_rules! from_redis_value_for_tuple {
                     Ok(($($name?,)*))
                 };
 
+                // hacky way to count the tuple size
+                let mut n = 0;
+                $(let $name = (); n += 1;)*
+
                 // let mut rv = vec![];
                 if items.len() == 0 {
                     return vec![];
                 }
-                if items.iter().all(|item| item.is_collection_of_len($arity)) {
+                if items.iter().all(|item| item.is_collection_of_len(n)) {
                     return items.into_iter().map(|item| from_redis_value(item).map_err(|err|err.into())).collect();
                 }
 
-                let mut rv = Vec::with_capacity(items.len() / $arity);
+                let mut rv = Vec::with_capacity(items.len() / n);
 
-                let (chunks, remainder) = items.as_chunks_mut::<$arity>();
-                if !remainder.is_empty() {
-                    return vec![Err(format!("Vector with length {} doesn't have arity of {}", items.len(), $arity).into())];
-                }
-                for [$($name),*] in chunks {
-                    // Take each element out of the chunk with `std::mem::replace`, leaving a `Value::Nil`
-                    // in its place. This allows each `Value` to be parsed without being copied.
-                    // Since `items` is consumed by this function and not used later, this replacement
-                    // is not observable to the rest of the code.
-                    rv.push(extract(($(from_redis_value(std::mem::replace($name, Value::Nil)).into(),)*)));
+                for chunk in items.chunks_mut(n) {
+                    match chunk {
+                        // Take each element out of the chunk with `std::mem::replace`, leaving a `Value::Nil`
+                        // in its place. This allows each `Value` to be parsed without being copied.
+                        // Since `items` is consumed by this function and not used later, this replacement
+                        // is not observable to the rest of the code.
+                        [$($name),*] => rv.push(extract(($(from_redis_value(std::mem::replace($name, Value::Nil)).into(),)*))),
+                         _ => return vec![Err(format!("Vector of length {} doesn't have arity of {n}", items.len()).into())],
+                    }
                 }
                 rv
             }
 
             #[allow(non_snake_case, unused_variables)]
             fn from_redis_values(mut items: Vec<Value>) -> Result<Vec<($($name,)*)>, ParsingError> {
+                // hacky way to count the tuple size
+                let mut n = 0;
+                $(let $name = (); n += 1;)*
+
                 // let mut rv = vec![];
                 if items.len() == 0 {
                     return Ok(vec![])
                 }
-                if items.iter().all(|item| item.is_collection_of_len($arity)) {
+                if items.iter().all(|item| item.is_collection_of_len(n)) {
                     return items.into_iter().map(|item| from_redis_value(item)).collect();
                 }
 
-                let mut rv = Vec::with_capacity(items.len() / $arity);
-
-                let (chunks, remainder) = items.as_chunks_mut::<$arity>();
-                if !remainder.is_empty() {
-                    return Err(format!("Vector with length {} doesn't have arity of {}", items.len(), $arity).into());
-                }
-                for [$($name),*] in chunks {
-                    // Take each element out of the chunk with `std::mem::replace`, leaving a `Value::Nil`
-                    // in its place. This allows each `Value` to be parsed without being copied.
-                    // Since `items` is consumed by this function and not used later, this replacement
-                    // is not observable to the rest of the code.
-                    rv.push(($(from_redis_value(std::mem::replace($name, Value::Nil))?,)*));
+                let mut rv = Vec::with_capacity(items.len() / n);
+                for chunk in items.chunks_mut(n) {
+                    match chunk {
+                        // Take each element out of the chunk with `std::mem::replace`, leaving a `Value::Nil`
+                        // in its place. This allows each `Value` to be parsed without being copied.
+                        // Since `items` is consume by this function and not used later, this replacement
+                        // is not observable to the rest of the code.
+                        [$($name),*] => rv.push(($(from_redis_value(std::mem::replace($name, Value::Nil))?,)*)),
+                         _ => return Err(format!("Vector of length {} doesn't have arity of {n}", items.len()).into()),
+                    }
                 }
                 Ok(rv)
             }
@@ -2325,41 +2343,41 @@ macro_rules! from_redis_value_for_tuple {
     )
 }
 
-from_redis_value_for_tuple! { 1, #[cfg_attr(docsrs, doc(fake_variadic))], #[doc = "This trait is implemented for tuples up to 12 items long."], T, }
-from_redis_value_for_tuple! { 2, #[doc(hidden)], T1, T2, }
-from_redis_value_for_tuple! { 3, #[doc(hidden)], T1, T2, T3, }
-from_redis_value_for_tuple! { 4, #[doc(hidden)], T1, T2, T3, T4, }
-from_redis_value_for_tuple! { 5, #[doc(hidden)], T1, T2, T3, T4, T5, }
-from_redis_value_for_tuple! { 6, #[doc(hidden)], T1, T2, T3, T4, T5, T6, }
-from_redis_value_for_tuple! { 7, #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, }
-from_redis_value_for_tuple! { 8, #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, }
-from_redis_value_for_tuple! { 9, #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, T9, }
-from_redis_value_for_tuple! { 10, #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, }
-from_redis_value_for_tuple! { 11, #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, }
-from_redis_value_for_tuple! { 12, #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, }
+from_redis_value_for_tuple! { #[cfg_attr(docsrs, doc(fake_variadic))], #[doc = "This trait is implemented for tuples up to 12 items long."], T, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, T4, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, T4, T5, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, T4, T5, T6, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, T9, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, }
+from_redis_value_for_tuple! { #[doc(hidden)], T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, }
 
 impl FromRedisValue for InfoDict {
-    fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
+    fn from_redis_value_ref(v: &Value) -> Result<InfoDict, ParsingError> {
         let v = get_inner_value(v);
         let s: String = from_redis_value_ref(v)?;
-        Ok(Self::new(&s))
+        Ok(InfoDict::new(&s))
     }
-    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
+    fn from_redis_value(v: Value) -> Result<InfoDict, ParsingError> {
         let v = get_owned_inner_value(v);
         let s: String = from_redis_value(v)?;
-        Ok(Self::new(&s))
+        Ok(InfoDict::new(&s))
     }
 }
 
 impl<T: FromRedisValue> FromRedisValue for Option<T> {
-    fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
+    fn from_redis_value_ref(v: &Value) -> Result<Option<T>, ParsingError> {
         let v = get_inner_value(v);
         if *v == Value::Nil {
             return Ok(None);
         }
         Ok(Some(from_redis_value_ref(v)?))
     }
-    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
+    fn from_redis_value(v: Value) -> Result<Option<T>, ParsingError> {
         let v = get_owned_inner_value(v);
         if v == Value::Nil {
             return Ok(None);
@@ -2373,7 +2391,7 @@ impl FromRedisValue for bytes::Bytes {
     fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
         let v = get_inner_value(v);
         match v {
-            Value::BulkString(bytes_vec) => Ok(Self::copy_from_slice(bytes_vec.as_ref())),
+            Value::BulkString(bytes_vec) => Ok(bytes::Bytes::copy_from_slice(bytes_vec.as_ref())),
             _ => crate::errors::invalid_type_error!(v, "Not a bulk string"),
         }
     }
@@ -2390,7 +2408,7 @@ impl FromRedisValue for bytes::Bytes {
 impl FromRedisValue for uuid::Uuid {
     fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
         match *v {
-            Value::BulkString(ref bytes) => Ok(Self::from_slice(bytes)?),
+            Value::BulkString(ref bytes) => Ok(uuid::Uuid::from_slice(bytes)?),
             _ => crate::errors::invalid_type_error!(v, "Response type not uuid compatible."),
         }
     }
@@ -2480,7 +2498,7 @@ pub enum ProtocolVersion {
 impl ProtocolVersion {
     /// Returns true if the protocol can support RESP3 features.
     pub fn supports_resp3(&self) -> bool {
-        !matches!(self, Self::RESP2)
+        !matches!(self, ProtocolVersion::RESP2)
     }
 }
 
@@ -2506,10 +2524,10 @@ impl ToRedisArgs for ExpireOption {
         W: ?Sized + RedisWrite,
     {
         match self {
-            Self::NX => out.write_arg(b"NX"),
-            Self::XX => out.write_arg(b"XX"),
-            Self::GT => out.write_arg(b"GT"),
-            Self::LT => out.write_arg(b"LT"),
+            ExpireOption::NX => out.write_arg(b"NX"),
+            ExpireOption::XX => out.write_arg(b"XX"),
+            ExpireOption::GT => out.write_arg(b"GT"),
+            ExpireOption::LT => out.write_arg(b"LT"),
             _ => {}
         }
     }
@@ -2526,7 +2544,7 @@ pub struct PushInfo {
 
 impl PushInfo {
     pub(crate) fn disconnect() -> Self {
-        Self {
+        PushInfo {
             kind: crate::PushKind::Disconnection,
             data: vec![],
         }
@@ -2571,7 +2589,7 @@ pub enum ValueType {
     TimeSeries,
     /// A Trie. [Redis Docs](https://redis.io/docs/latest/develop/ai/search-and-query/advanced-concepts/autocomplete/)
     Trie,
-    /// A Bloom filter from Valkey's module. [Valkey Docs](https://valkey.io/topics/bloomfilters/)
+    /// A Bloom filter from Valkey's module. [ValKey Docs](https://valkey.io/topics/bloomfilters/)
     BloomFilterValKey,
     /// Any other value type not explicitly defined in [Redis Docs](https://redis.io/docs/latest/commands/type/)
     Unknown(String),
@@ -2580,30 +2598,30 @@ pub enum ValueType {
 impl<T: AsRef<str>> From<T> for ValueType {
     fn from(s: T) -> Self {
         match s.as_ref() {
-            "none" => Self::None,
-            "string" => Self::String,
-            "list" => Self::List,
-            "set" => Self::Set,
-            "zset" => Self::ZSet,
-            "hash" => Self::Hash,
-            "stream" => Self::Stream,
-            "vectorset" => Self::VectorSet,
+            "none" => ValueType::None,
+            "string" => ValueType::String,
+            "list" => ValueType::List,
+            "set" => ValueType::Set,
+            "zset" => ValueType::ZSet,
+            "hash" => ValueType::Hash,
+            "stream" => ValueType::Stream,
+            "vectorset" => ValueType::VectorSet,
             // JSON module
-            "ReJSON-RL" => Self::JSON,
+            "ReJSON-RL" => ValueType::JSON,
             // Bloom module (Redis)
-            "CMSk-TYPE" => Self::CountMin,
-            "MBbloom--" => Self::BloomFilterRedis,
-            "MBbloomCF" => Self::CuckooFilter,
-            "TDIS-TYPE" => Self::TDigest,
-            "TopK-TYPE" => Self::TopK,
+            "CMSk-TYPE" => ValueType::CountMin,
+            "MBbloom--" => ValueType::BloomFilterRedis,
+            "MBbloomCF" => ValueType::CuckooFilter,
+            "TDIS-TYPE" => ValueType::TDigest,
+            "TopK-TYPE" => ValueType::TopK,
             // Search module
-            "trietype0" => Self::Trie,
+            "trietype0" => ValueType::Trie,
             // Timeseries module
-            "TSDB-TYPE" => Self::TimeSeries,
-            // Bloom module (Valkey)
-            "bloomfltr" => Self::BloomFilterValKey,
+            "TSDB-TYPE" => ValueType::TimeSeries,
+            // Bloom module (ValKey)
+            "bloomfltr" => ValueType::BloomFilterValKey,
             // Fallback
-            s => Self::Unknown(s.to_string()),
+            s => ValueType::Unknown(s.to_string()),
         }
     }
 }
@@ -2631,7 +2649,7 @@ impl From<ValueType> for String {
             ValueType::Trie => "trietype0".to_string(),
             // Timeseries module
             ValueType::TimeSeries => "TSDB-TYPE".to_string(),
-            // Bloom module (Valkey)
+            // Bloom module (ValKey)
             ValueType::BloomFilterValKey => "bloomfltr".to_string(),
             // Fallback
             ValueType::Unknown(s) => s,
@@ -2671,9 +2689,9 @@ impl IntegerReplyOrNoOp {
     /// Returns the integer value of the reply.
     pub fn raw(&self) -> isize {
         match self {
-            Self::IntegerReply(s) => *s as isize,
-            Self::NotExists => -2,
-            Self::ExistsButNotRelevant => -1,
+            IntegerReplyOrNoOp::IntegerReply(s) => *s as isize,
+            IntegerReplyOrNoOp::NotExists => -2,
+            IntegerReplyOrNoOp::ExistsButNotRelevant => -1,
         }
     }
 }
@@ -2682,9 +2700,9 @@ impl FromRedisValue for IntegerReplyOrNoOp {
     fn from_redis_value_ref(v: &Value) -> Result<Self, ParsingError> {
         match v {
             Value::Int(s) => match s {
-                -2 => Ok(Self::NotExists),
-                -1 => Ok(Self::ExistsButNotRelevant),
-                _ => Ok(Self::IntegerReply(*s as usize)),
+                -2 => Ok(IntegerReplyOrNoOp::NotExists),
+                -1 => Ok(IntegerReplyOrNoOp::ExistsButNotRelevant),
+                _ => Ok(IntegerReplyOrNoOp::IntegerReply(*s as usize)),
             },
             _ => crate::errors::invalid_type_error!(v, "Value should be an integer"),
         }
@@ -2693,9 +2711,9 @@ impl FromRedisValue for IntegerReplyOrNoOp {
     fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
         match v {
             Value::Int(s) => match s {
-                -2 => Ok(Self::NotExists),
-                -1 => Ok(Self::ExistsButNotRelevant),
-                _ => Ok(Self::IntegerReply(s as usize)),
+                -2 => Ok(IntegerReplyOrNoOp::NotExists),
+                -1 => Ok(IntegerReplyOrNoOp::ExistsButNotRelevant),
+                _ => Ok(IntegerReplyOrNoOp::IntegerReply(s as usize)),
             },
             _ => crate::errors::invalid_type_error!(v, "Value should be an integer"),
         }
@@ -2705,9 +2723,9 @@ impl FromRedisValue for IntegerReplyOrNoOp {
 impl PartialEq<isize> for IntegerReplyOrNoOp {
     fn eq(&self, other: &isize) -> bool {
         match self {
-            Self::IntegerReply(s) => *s as isize == *other,
-            Self::NotExists => *other == -2,
-            Self::ExistsButNotRelevant => *other == -1,
+            IntegerReplyOrNoOp::IntegerReply(s) => *s as isize == *other,
+            IntegerReplyOrNoOp::NotExists => *other == -2,
+            IntegerReplyOrNoOp::ExistsButNotRelevant => *other == -1,
         }
     }
 }
@@ -2715,7 +2733,7 @@ impl PartialEq<isize> for IntegerReplyOrNoOp {
 impl PartialEq<usize> for IntegerReplyOrNoOp {
     fn eq(&self, other: &usize) -> bool {
         match self {
-            Self::IntegerReply(s) => *s == *other,
+            IntegerReplyOrNoOp::IntegerReply(s) => *s == *other,
             _ => false,
         }
     }
@@ -2724,9 +2742,9 @@ impl PartialEq<usize> for IntegerReplyOrNoOp {
 impl PartialEq<i32> for IntegerReplyOrNoOp {
     fn eq(&self, other: &i32) -> bool {
         match self {
-            Self::IntegerReply(s) => *s as i32 == *other,
-            Self::NotExists => *other == -2,
-            Self::ExistsButNotRelevant => *other == -1,
+            IntegerReplyOrNoOp::IntegerReply(s) => *s as i32 == *other,
+            IntegerReplyOrNoOp::NotExists => *other == -2,
+            IntegerReplyOrNoOp::ExistsButNotRelevant => *other == -1,
         }
     }
 }
@@ -2734,62 +2752,8 @@ impl PartialEq<i32> for IntegerReplyOrNoOp {
 impl PartialEq<u32> for IntegerReplyOrNoOp {
     fn eq(&self, other: &u32) -> bool {
         match self {
-            Self::IntegerReply(s) => *s as u32 == *other,
+            IntegerReplyOrNoOp::IntegerReply(s) => *s as u32 == *other,
             _ => false,
         }
-    }
-}
-
-/// The two-element reply of the [INCREX](https://redis.io/commands/increx) command.
-///
-/// Each field holds the raw [`Value`] returned by the server.
-/// For `BYINT` operations this is an integer, while for `BYFLOAT` it is a bulk string (RESP2) or double (RESP3).
-/// Decode a field into a concrete type with [`value_as`](Self::value_as) / [`actual_increment_as`](Self::actual_increment_as)
-/// - e.g. `i64` for `BYINT` or `f64` (or a wider type such as `bigdecimal::BigDecimal`) for `BYFLOAT`.
-#[derive(Clone, Debug, PartialEq)]
-#[non_exhaustive]
-pub struct IncrexResult {
-    /// The key's value after the increment.
-    pub value: Value,
-    /// The increment that was actually applied.
-    ///
-    /// This is `0` when the default policy (when `SATURATE` is not set) rejected an out-of-bounds operation.
-    /// In that case `value` holds the unchanged current value and the TTL is left untouched.
-    /// When `SATURATE` is set, it clamps the result to a bound.
-    /// This reflects the clamped delta, which may differ from the requested increment.
-    pub actual_increment: Value,
-}
-
-impl IncrexResult {
-    /// Decode [`value`](Self::value) into the desired type.
-    /// - e.g. `i64` for `BYINT` operations and `f64` or a wider type for `BYFLOAT` operations.
-    pub fn value_as<T: FromRedisValue>(&self) -> Result<T, ParsingError> {
-        T::from_redis_value_ref(&self.value)
-    }
-
-    /// Decode [`actual_increment`](Self::actual_increment) into the desired type.
-    /// - e.g. `i64` for `BYINT` operations and `f64` or a wider type for `BYFLOAT` operations.
-    pub fn actual_increment_as<T: FromRedisValue>(&self) -> Result<T, ParsingError> {
-        T::from_redis_value_ref(&self.actual_increment)
-    }
-
-    /// Decode both fields as `i64`, the natural type for a `BYINT` result, returning `(value, actual_increment)`.
-    pub fn as_i64(&self) -> Result<(i64, i64), ParsingError> {
-        Ok((self.value_as()?, self.actual_increment_as()?))
-    }
-
-    /// Decode both fields as `f64`, the natural type for a `BYFLOAT` result, returning `(value, actual_increment)`.
-    pub fn as_f64(&self) -> Result<(f64, f64), ParsingError> {
-        Ok((self.value_as()?, self.actual_increment_as()?))
-    }
-}
-
-impl FromRedisValue for IncrexResult {
-    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
-        let [value, actual_increment] = <[Value; 2]>::from_redis_value(v)?;
-        Ok(Self {
-            value,
-            actual_increment,
-        })
     }
 }

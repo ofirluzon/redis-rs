@@ -97,30 +97,29 @@ fn test_module_bloom_multiple_value_updates() {
 
 /// Tries to assure that information functions work
 #[test]
-fn test_module_bloom_info() {
+fn test_module_bloom_infos() {
     let ctx = TestContext::with_modules(&[Module::Bloom]);
     let mut con = ctx.connection();
 
-    // Check that getting info on a not yet existing key does not panic
+    // Check that getting infos on a not yet existing key does not panic
     assert_eq!(con.bf_card(KEY_1), Ok(0));
     assert_eq!(con.key_type(KEY_1), Ok(ValueType::None));
     assert_matches!(con.bf_info(KEY_1).unwrap_err().detail(), Some(d) if d.contains("not found"));
     assert_matches!(con.bf_info_type(KEY_1, BloomFilterInfoType::Items).unwrap_err().detail(), Some(d) if d.contains("not found"));
     assert_eq!(con.bf_exists(KEY_1, "foo"), Ok(false));
+    // As of 2026-04-16, the following command should produce an error according to
+    // https://redis.io/docs/latest/commands/bf.mexists/
+    // as the key is missing. But instead it returns a proper array result
     assert_eq!(
         con.bf_mexists(KEY_1, &["foo", "bar", "baz"]),
         Ok(vec![false, false, false])
     );
 
-    // Add a single value and check its info
+    // Add a single value and check its infos
     assert_eq!(con.bf_add(KEY_1, "foo"), Ok(true));
     assert_eq!(con.bf_card(KEY_1), Ok(1));
     let bf_type = con.key_type(KEY_1).unwrap();
-    if ctx.supports(REDIS_BLOOM_ANY) {
-        assert_eq!(bf_type, ValueType::BloomFilterRedis);
-    } else {
-        assert_eq!(bf_type, ValueType::BloomFilterValKey);
-    }
+    assert!([ValueType::BloomFilterRedis, ValueType::BloomFilterValKey].contains(&bf_type));
     assert_eq!(
         con.bf_info(KEY_1)
             .unwrap()
@@ -139,7 +138,7 @@ fn test_module_bloom_info() {
         Ok(vec![true, false, false])
     );
 
-    // Add a second value and check its info
+    // Add a second value and check its infos
     assert_eq!(con.bf_add(KEY_1, "bar"), Ok(true));
     assert_eq!(con.bf_card(KEY_1), Ok(2));
     assert_eq!(con.key_type(KEY_1), Ok(bf_type.clone()));
@@ -162,10 +161,10 @@ fn test_module_bloom_info() {
         Ok(vec![true, true, false])
     );
 
-    // Adding the first value again should not change info, as that value was already added before.
+    // Adding the first value again should not change infos, as that value was already added before.
     assert_eq!(con.bf_add(KEY_1, "foo"), Ok(false));
     assert_eq!(con.bf_card(KEY_1), Ok(2));
-    assert_eq!(con.key_type(KEY_1), Ok(bf_type));
+    assert_eq!(con.key_type(KEY_1), Ok(bf_type.clone()));
     assert_eq!(
         con.bf_info(KEY_1)
             .unwrap()
@@ -185,7 +184,7 @@ fn test_module_bloom_info() {
         Ok(vec![true, true, false])
     );
 
-    // Check that getting info on a not-Bloom-filter key does not panic or change its value
+    // Check that getting infos on a not-Bloom-filter key does not panic or change its value
     assert_eq!(con.set(KEY_2, "quux"), Ok(()));
     assert_eq!(con.bf_card(KEY_2).unwrap_err().code(), Some("WRONGTYPE"));
     assert_eq!(con.bf_info(KEY_2).unwrap_err().code(), Some("WRONGTYPE"));
@@ -195,18 +194,14 @@ fn test_module_bloom_info() {
             .code(),
         Some("WRONGTYPE")
     );
-    let res_exists = con.bf_exists(KEY_2, "foo");
-    let res_mexists = con.bf_mexists(KEY_2, &["foo", "bar", "baz"]);
-    // We check whether we run Redis' and Valkey's `bloom` module, as they differ in how they react
-    // to non-Bloom filter keys.
-    if ctx.supports(REDIS_BLOOM_ANY) {
-        assert_eq!(res_exists, Ok(false));
-        assert_eq!(res_mexists, Ok(vec![false, false, false]));
-    } else {
-        assert_eq!(res_exists.unwrap_err().code(), Some("WRONGTYPE"));
-        assert_eq!(res_mexists.unwrap_err().code(), Some("WRONGTYPE"));
-    }
-    // Check that the value of the non-Bloom filter key did not change
+    assert_eq!(con.bf_exists(KEY_2, "foo"), Ok(false));
+    // As of 2026-04-16, the following command should produce an error according to
+    // https://redis.io/docs/latest/commands/bf.mexists/
+    // as the key is of the wrong type. But instead it returns a proper array result
+    assert_eq!(
+        con.bf_mexists(KEY_2, &["foo", "bar", "baz"]),
+        Ok(vec![false, false, false])
+    );
     assert_eq!(con.get(KEY_2), Ok(Some("quux".to_string())));
 }
 
@@ -254,7 +249,6 @@ fn test_module_bloom_reserving() {
 #[test]
 fn test_module_bloom_dump_and_load() {
     let ctx = TestContext::with_modules(&[Module::Bloom]);
-    skip_if_context_does_not_support!(ctx, REDIS_BLOOM_ANY);
     let mut con = ctx.connection();
 
     // Create a bloom filter with two elements
@@ -308,7 +302,6 @@ fn test_module_bloom_dump_and_load() {
 #[test]
 fn test_module_bloom_dump_iterator() {
     let ctx = TestContext::with_modules(&[Module::Bloom]);
-    skip_if_context_does_not_support!(ctx, REDIS_BLOOM_ANY);
     let mut con = ctx.connection();
 
     // Create a bloom filter with two elements

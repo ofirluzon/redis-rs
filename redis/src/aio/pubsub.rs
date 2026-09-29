@@ -84,7 +84,7 @@ where
     where
         T: Sink<Vec<u8>, Error = RedisError> + Stream<Item = RedisResult<Value>> + 'static,
     {
-        Self {
+        PipelineSink {
             sink_stream,
             in_flight: VecDeque::new(),
             sender,
@@ -122,7 +122,7 @@ where
                 {
                     if let Some(entry) = self_.in_flight.pop_front() {
                         let _ = entry.send(Ok(Value::Array(value)));
-                    }
+                    };
                     return Ok(());
                 }
 
@@ -138,7 +138,7 @@ where
                 if kind.has_reply() {
                     if let Some(entry) = self_.in_flight.pop_front() {
                         let _ = entry.send(Ok(Value::Push { kind, data }));
-                    }
+                    };
                     return Ok(());
                 }
 
@@ -264,7 +264,7 @@ impl PubSubSink {
         .map(Ok)
         .forward(sink)
         .map(|_| ());
-        (Self { sender }, f)
+        (PubSubSink { sender }, f)
     }
 
     async fn send_recv(&mut self, input: Vec<u8>) -> Result<Value, RedisError> {
@@ -401,7 +401,7 @@ impl PubSub {
             receiver,
             _task_handle,
         };
-        let con = Self { sink, stream };
+        let con = PubSub { sink, stream };
         Ok(con)
     }
 

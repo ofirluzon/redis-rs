@@ -154,22 +154,22 @@ pub(crate) fn start_tls_crypto_provider() {
 }
 
 impl TestContext {
-    pub fn new() -> Self {
-        Self::with_modules(&[])
+    pub fn new() -> TestContext {
+        TestContext::with_modules(&[])
     }
 
     #[cfg(feature = "tls-rustls")]
-    pub fn new_with_mtls() -> Self {
+    pub fn new_with_mtls() -> TestContext {
         Self::with_modules_and_tls(&[], true, None)
     }
 
     #[cfg(feature = "tls-rustls")]
-    pub fn new_with_cert_auth(tls_files: TlsFilePaths) -> Self {
+    pub fn new_with_cert_auth(tls_files: TlsFilePaths) -> TestContext {
         Self::new_with_cert_auth_field(tls_files, "CN")
     }
 
     #[cfg(feature = "tls-rustls")]
-    pub fn new_with_cert_auth_field(tls_files: TlsFilePaths, cert_field: &str) -> Self {
+    pub fn new_with_cert_auth_field(tls_files: TlsFilePaths, cert_field: &str) -> TestContext {
         start_tls_crypto_provider();
         let redis_port = get_random_available_port();
         let addr = RedisServer::get_addr(redis_port);
@@ -207,11 +207,11 @@ impl TestContext {
         )
     }
 
-    pub fn with_tls(tls_files: TlsFilePaths, mtls_enabled: bool) -> Self {
+    pub fn with_tls(tls_files: TlsFilePaths, mtls_enabled: bool) -> TestContext {
         Self::with_modules_and_tls(&[], mtls_enabled, Some(tls_files))
     }
 
-    pub fn with_modules(modules: &[Module]) -> Self {
+    pub fn with_modules(modules: &[Module]) -> TestContext {
         Self::with_modules_and_tls(modules, false, None)
     }
 
@@ -320,7 +320,7 @@ impl TestContext {
             }
         }
 
-        Self {
+        TestContext {
             server,
             client,
             protocol: use_protocol(),
@@ -474,7 +474,7 @@ where
 }
 
 #[cfg(feature = "tls-rustls")]
-pub fn load_certs_from_file(tls_file_paths: &TlsFilePaths) -> TlsCertificates {
+fn load_certs_from_file(tls_file_paths: &TlsFilePaths) -> TlsCertificates {
     let ca_file = File::open(&tls_file_paths.ca_crt).expect("Cannot open CA cert file");
     let mut root_cert_vec = Vec::new();
     BufReader::new(ca_file)

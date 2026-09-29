@@ -147,11 +147,6 @@ use crate::{
     connection::ConnectionInfo, errors::ServerErrorKind, io::tcp::TcpSettings, types::RedisResult,
 };
 
-fn not_a_sentinel_error() -> RedisError {
-    const ERR_MSG: &str = "Address does not point to a sentinel node";
-    RedisError::from((ErrorKind::InvalidClientConfig, ERR_MSG))
-}
-
 /// The Sentinel type, serves as a special purpose client which builds other clients on
 /// demand.
 pub struct Sentinel {
@@ -597,7 +592,13 @@ async fn async_get_valid_replicas_addresses(
 ) -> RedisResult<Vec<ConnectionInfo>> {
     async fn is_replica_role_valid(connection_info: ConnectionInfo) -> Option<ConnectionInfo> {
         match async_determine_slave_from_role_or_info_replication(&connection_info).await {
-            Ok(x) => x.then_some(connection_info),
+            Ok(x) => {
+                if x {
+                    Some(connection_info)
+                } else {
+                    None
+                }
+            }
             Err(_e) => None,
         }
     }
@@ -620,13 +621,6 @@ async fn async_reconnect(
     let sentinel_client = Client::open(connection_info.clone())?;
     let new_connection = sentinel_client.get_multiplexed_async_connection().await?;
     connection.replace(new_connection);
-    let role: Role = crate::cmd("ROLE")
-        .query_async(connection.as_mut().unwrap())
-        .await?;
-    if !matches!(role, Role::Sentinel { .. }) {
-        *connection = None;
-        return Err(not_a_sentinel_error());
-    }
     Ok(())
 }
 
@@ -661,11 +655,6 @@ fn reconnect(
     let sentinel_client = Client::open(connection_info.clone())?;
     let new_connection = sentinel_client.get_connection()?;
     connection.replace(new_connection);
-    let role: Role = crate::cmd("ROLE").query(connection.as_mut().unwrap())?;
-    if !matches!(role, Role::Sentinel { .. }) {
-        *connection = None;
-        return Err(not_a_sentinel_error());
-    }
     Ok(())
 }
 
@@ -695,27 +684,23 @@ fn try_single_sentinel<T: FromRedisValue>(
 // non-async methods
 impl Sentinel {
     #[cfg(not(feature = "tls-rustls"))]
-    /// Creates a Sentinel client performing some basic checks on the URLs that might
-    /// make the operation fail.
-    ///
-    /// `params` must contain addresses of Redis Sentinel nodes, not regular Redis nodes.
+    /// Creates a Sentinel client performing some basic
+    /// checks on the URLs that might make the operation fail.
     pub fn build<T: IntoConnectionInfo>(params: Vec<T>) -> RedisResult<Sentinel> {
         Self::build_inner(params)
     }
 
     #[cfg(feature = "tls-rustls")]
-    /// Creates a Sentinel client performing some basic checks on the URLs that might
-    /// make the operation fail.
-    ///
-    /// `params` must contain addresses of Redis Sentinel nodes, not regular Redis nodes.
-    pub fn build<T: IntoConnectionInfo>(params: Vec<T>) -> RedisResult<Self> {
+    /// Creates a Sentinel client performing some basic
+    /// checks on the URLs that might make the operation fail.
+    pub fn build<T: IntoConnectionInfo>(params: Vec<T>) -> RedisResult<Sentinel> {
         Self::build_inner(params, None)
     }
 
     fn build_inner<T: IntoConnectionInfo>(
         params: Vec<T>,
         #[cfg(feature = "tls-rustls")] certs: Option<TlsCertificates>,
-    ) -> RedisResult<Self> {
+    ) -> RedisResult<Sentinel> {
         if params.is_empty() {
             fail!((
                 ErrorKind::EmptySentinelList,
@@ -745,7 +730,7 @@ impl Sentinel {
             let mut async_connections_cache = vec![];
             async_connections_cache.resize_with(sentinels_connection_info.len(), Default::default);
 
-            Ok(Self {
+            Ok(Sentinel {
                 sentinels_connection_info,
                 connections_cache,
                 async_connections_cache,
@@ -1098,7 +1083,7 @@ pub struct LockedSentinelClient(pub(crate) Mutex<SentinelClient>);
 impl LockedSentinelClient {
     /// new creates a LockedSentinelClient by wrapping a new Mutex around the SentinelClient
     pub fn new(client: SentinelClient) -> Self {
-        Self(Mutex::new(client))
+        LockedSentinelClient(Mutex::new(client))
     }
 
     /// get_connection is the override for LockedSentinelClient to make it possible to
@@ -1151,8 +1136,6 @@ impl SentinelClient {
     #[cfg(not(feature = "tls-rustls"))]
     /// Creates a SentinelClient performing some basic checks on the URLs that might
     /// result in an error.
-    ///
-    /// `params` must contain addresses of Redis Sentinel nodes, not regular Redis nodes.
     pub fn build<T: IntoConnectionInfo>(
         params: Vec<T>,
         service_name: String,
@@ -1165,8 +1148,6 @@ impl SentinelClient {
     #[cfg(feature = "tls-rustls")]
     /// Creates a SentinelClient performing some basic checks on the URLs that might
     /// result in an error.
-    ///
-    /// `params` must contain addresses of Redis Sentinel nodes, not regular Redis nodes.
     pub fn build<T: IntoConnectionInfo>(
         params: Vec<T>,
         service_name: impl AsRef<str>,
@@ -1189,7 +1170,7 @@ impl SentinelClient {
         server_type: SentinelServerType,
         #[cfg(feature = "tls-rustls")] certs: Option<TlsCertificates>,
     ) -> RedisResult<Self> {
-        Ok(Self {
+        Ok(SentinelClient {
             #[cfg(not(feature = "tls-rustls"))]
             sentinel: Sentinel::build_inner(params)?,
             #[cfg(feature = "tls-rustls")]
@@ -1389,15 +1370,15 @@ pub struct SentinelClientBuilder {
 
 impl SentinelClientBuilder {
     /// Creates a new `SentinelClientBuilder`
-    /// - `sentinels` - Addresses of Redis Sentinel nodes (not regular Redis nodes)
+    /// - `sentinels` - Addresses of sentinel nodes
     /// - `service_name` - The name of the service to be queried via the sentinels
     /// - `server_type` - The server type to be queried via the sentinels
     pub fn new<T: IntoIterator<Item = ConnectionAddr>>(
         sentinels: T,
         service_name: impl AsRef<str>,
         server_type: SentinelServerType,
-    ) -> RedisResult<Self> {
-        Ok(Self {
+    ) -> RedisResult<SentinelClientBuilder> {
+        Ok(SentinelClientBuilder {
             sentinels: sentinels.into_iter().collect::<Vec<_>>(),
             service_name: service_name.as_ref().into(),
             server_type,
@@ -1549,81 +1530,111 @@ impl SentinelClientBuilder {
     }
 
     /// Set tls mode for the connection to redis
-    pub fn set_client_to_redis_tls_mode(mut self, tls_mode: TlsMode) -> Self {
+    pub fn set_client_to_redis_tls_mode(mut self, tls_mode: TlsMode) -> SentinelClientBuilder {
         self.client_to_redis_params.tls_mode = Some(tls_mode);
         self
     }
 
     /// Set db for the connection to redis
-    pub fn set_client_to_redis_db(mut self, db: i64) -> Self {
+    pub fn set_client_to_redis_db(mut self, db: i64) -> SentinelClientBuilder {
         self.client_to_redis_params.db = Some(db);
         self
     }
 
     /// Set username for the connection to redis
-    pub fn set_client_to_redis_username(mut self, username: impl AsRef<str>) -> Self {
+    pub fn set_client_to_redis_username(
+        mut self,
+        username: impl AsRef<str>,
+    ) -> SentinelClientBuilder {
         self.client_to_redis_params.username = Some(username.as_ref().into());
         self
     }
 
     /// Set password for the connection to redis
-    pub fn set_client_to_redis_password(mut self, password: impl AsRef<str>) -> Self {
+    pub fn set_client_to_redis_password(
+        mut self,
+        password: impl AsRef<str>,
+    ) -> SentinelClientBuilder {
         self.client_to_redis_params.password = Some(password.as_ref().into());
         self
     }
 
     /// Set protocol for the connection to redis
-    pub fn set_client_to_redis_protocol(mut self, protocol: ProtocolVersion) -> Self {
+    pub fn set_client_to_redis_protocol(
+        mut self,
+        protocol: ProtocolVersion,
+    ) -> SentinelClientBuilder {
         self.client_to_redis_params.protocol = Some(protocol);
         self
     }
 
     #[cfg(feature = "tls-rustls")]
     /// Set certificates for the connection to redis
-    pub fn set_client_to_redis_certificates(mut self, certificates: TlsCertificates) -> Self {
+    pub fn set_client_to_redis_certificates(
+        mut self,
+        certificates: TlsCertificates,
+    ) -> SentinelClientBuilder {
         self.client_to_redis_params.certificates = Some(certificates);
         self
     }
 
     /// Set TCP settings for the connection to the Redis nodes
-    pub fn set_client_to_redis_tcp_settings(mut self, tcp_settings: TcpSettings) -> Self {
+    pub fn set_client_to_redis_tcp_settings(
+        mut self,
+        tcp_settings: TcpSettings,
+    ) -> SentinelClientBuilder {
         self.client_to_redis_params.tcp_settings = tcp_settings;
         self
     }
 
     /// Set tls mode for the connection to the sentinels
-    pub fn set_client_to_sentinel_tls_mode(mut self, tls_mode: TlsMode) -> Self {
+    pub fn set_client_to_sentinel_tls_mode(mut self, tls_mode: TlsMode) -> SentinelClientBuilder {
         self.client_to_sentinel_params.tls_mode = Some(tls_mode);
         self
     }
 
     /// Set username for the connection to the sentinels
-    pub fn set_client_to_sentinel_username(mut self, username: impl AsRef<str>) -> Self {
+    pub fn set_client_to_sentinel_username(
+        mut self,
+        username: impl AsRef<str>,
+    ) -> SentinelClientBuilder {
         self.client_to_sentinel_params.username = Some(username.as_ref().into());
         self
     }
 
     /// Set password for the connection to the sentinels
-    pub fn set_client_to_sentinel_password(mut self, password: impl AsRef<str>) -> Self {
+    pub fn set_client_to_sentinel_password(
+        mut self,
+        password: impl AsRef<str>,
+    ) -> SentinelClientBuilder {
         self.client_to_sentinel_params.password = Some(password.as_ref().into());
         self
     }
 
     /// Set TCP settings for the connection to the sentinels
-    pub fn set_client_to_sentinel_tcp_settings(mut self, tcp_settings: TcpSettings) -> Self {
+    pub fn set_client_to_sentinel_tcp_settings(
+        mut self,
+        tcp_settings: TcpSettings,
+    ) -> SentinelClientBuilder {
         self.client_to_sentinel_params.tcp_settings = tcp_settings;
         self
     }
 
     /// Set protocol for the connection to the sentinels
-    pub fn set_client_to_sentinel_protocol(mut self, protocol: ProtocolVersion) -> Self {
+    pub fn set_client_to_sentinel_protocol(
+        mut self,
+        protocol: ProtocolVersion,
+    ) -> SentinelClientBuilder {
         self.client_to_sentinel_params.protocol = Some(protocol);
         self
     }
 
     #[cfg(feature = "tls-rustls")]
     /// Set certificate for the connection to the sentinels
-    pub fn set_client_to_sentinel_certificates(mut self, certificates: TlsCertificates) -> Self {
+    pub fn set_client_to_sentinel_certificates(
+        mut self,
+        certificates: TlsCertificates,
+    ) -> SentinelClientBuilder {
         self.client_to_sentinel_params.certificates = Some(certificates);
         self
     }

@@ -154,7 +154,7 @@ impl From<Output> for Value {
     fn from(value: Output) -> Self {
         match value {
             Output::Single(value) => value,
-            Output::Multi(values) => Self::Array(values),
+            Output::Multi(values) => Value::Array(values),
         }
     }
 }
@@ -527,17 +527,10 @@ where
         let info = get_connection_info(node, &self.cluster_params);
 
         let mut conn = C::connect(info, Some(self.cluster_params.connection_timeout))?;
-        if self.cluster_params.read_routing_factory.is_some() {
-            // If READONLY is sent to primary nodes, it will have no effect.
-            // We set this conditionally, because we don't know whether we'll be making read calls
-            // to replicas. (We allow overriding routing per-call)
-            cmd("READONLY")
-        } else {
-            // if readonly reading isn't set, we don't want to send READONLY, since some Redis providers don't support this command
-            // (for example, azure managed redis - https://redis.io/docs/latest/operate/rs/references/compatibility/commands/cluster/)
-            cmd("PING")
-        }
-        .exec(&mut conn)?;
+        // If READONLY is sent to primary nodes, it will have no effect.
+        // We set this unconditionally, because we don't know whether we'll be making read calls
+        // to replicas. (We allow overriding routing per-call)
+        cmd("READONLY").exec(&mut conn)?;
         conn.set_read_timeout(*self.read_timeout.borrow())?;
         conn.set_write_timeout(*self.write_timeout.borrow())?;
         Ok(conn)
@@ -546,7 +539,7 @@ where
     fn get_connection<'a>(
         &self,
         connections: &'a mut HashMap<NodeAddress, C>,
-        route: Route,
+        route: &Route,
     ) -> (NodeAddress, RedisResult<&'a mut C>) {
         let slots = self.slots.borrow();
         if let Some(addr) = slots.slot_addr_for_route(route, self.routing_strategy.as_deref()) {
@@ -581,7 +574,7 @@ where
 
         let addr_for_slot = |route: Route| -> RedisResult<NodeAddress> {
             let slot_addr = slots
-                .slot_addr_for_route(route, self.routing_strategy.as_deref())
+                .slot_addr_for_route(&route, self.routing_strategy.as_deref())
                 .ok_or((ErrorKind::Client, "Missing slot coverage"))?;
             Ok(slot_addr.clone())
         };
@@ -670,8 +663,10 @@ where
             .addresses_for_multi_slot(routes, self.routing_strategy.as_deref())
             .enumerate()
             .map(|(index, addr)| {
-                let addr = addr
-                    .ok_or_else(|| RedisError::from((ErrorKind::Io, "Couldn't find connection")))?;
+                let addr = addr.ok_or(RedisError::from((
+                    ErrorKind::Io,
+                    "Couldn't find connection",
+                )))?;
                 let connection = self.get_connection_by_addr(connections, addr)?;
                 let (_, indices) = routes.get(index).unwrap();
                 let cmd =
@@ -712,13 +707,13 @@ where
                 }
 
                 last_result
-                    .ok_or_else(|| {
+                    .ok_or(
                         (
                             ErrorKind::ClusterConnectionNotFound,
                             "No results received for multi-node operation",
                         )
-                            .into()
-                    })
+                            .into(),
+                    )
                     .map(|(_, res)| res)
             }
             Some(ResponsePolicy::OneSucceeded) => {
@@ -849,7 +844,7 @@ where
                             get_random_connection_or_error(&mut connections)
                         }
                         SingleNodeRoutingInfo::SpecificNode(route) => {
-                            self.get_connection(&mut connections, *route)
+                            self.get_connection(&mut connections, route)
                         }
                         SingleNodeRoutingInfo::ByAddress { host, port } => {
                             let address = NodeAddress::new(host.as_str(), *port);
@@ -857,7 +852,7 @@ where
                             (address, conn)
                         }
                         SingleNodeRoutingInfo::RandomPrimary => {
-                            self.get_connection(&mut connections, Route::new_random_primary())
+                            self.get_connection(&mut connections, &Route::new_random_primary())
                         }
                     }
                 };
@@ -1076,8 +1071,9 @@ impl<C: Connect + ConnectionLike> ConnectionLike for ClusterConnection<C> {
         let value = parse_redis_value(actual_cmd)?;
         let route = match RoutingInfo::for_routable(&value) {
             // we don't allow routing multiple commands to multiple nodes.
+            Some(RoutingInfo::MultiNode(_)) => None,
             Some(RoutingInfo::SingleNode(route)) => Some(route),
-            Some(RoutingInfo::MultiNode(_)) | None => None,
+            None => None,
         }
         .unwrap_or(SingleNodeRoutingInfo::Random);
         self.request(
@@ -1121,8 +1117,8 @@ struct NodeCmd {
 }
 
 impl NodeCmd {
-    fn new(a: NodeAddress) -> Self {
-        Self {
+    fn new(a: NodeAddress) -> NodeCmd {
+        NodeCmd {
             indexes: vec![],
             pipe: vec![],
             addr: a,

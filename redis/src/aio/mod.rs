@@ -85,7 +85,7 @@ pub trait ConnectionLike {
     #[doc(hidden)]
     fn req_packed_commands<'a>(
         &'a mut self,
-        pipeline: &'a crate::Pipeline,
+        cmd: &'a crate::Pipeline,
         offset: usize,
         count: usize,
     ) -> RedisFuture<'a, Vec<Value>>;
@@ -215,16 +215,6 @@ impl<T, Func: Fn(PushInfo) -> Result<(), T> + Send + Sync + 'static> AsyncPushSe
 impl AsyncPushSender for std::sync::mpsc::Sender<PushInfo> {
     fn send(&self, info: PushInfo) -> Result<(), SendError> {
         match self.send(info) {
-            Ok(_) => Ok(()),
-            Err(_) => Err(SendError),
-        }
-    }
-}
-
-#[cfg(feature = "cluster-async")]
-impl AsyncPushSender for futures_channel::mpsc::UnboundedSender<PushInfo> {
-    fn send(&self, info: PushInfo) -> Result<(), SendError> {
-        match self.unbounded_send(info) {
             Ok(_) => Ok(()),
             Err(_) => Err(SendError),
         }

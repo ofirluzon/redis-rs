@@ -88,7 +88,7 @@ impl TryFrom<&ConnectionAddr> for NodeAddress {
     fn try_from(addr: &ConnectionAddr) -> Result<Self, Self::Error> {
         match addr {
             ConnectionAddr::Tcp(host, port) | ConnectionAddr::TcpTls { host, port, .. } => {
-                Ok(Self::new(host.as_str(), *port))
+                Ok(NodeAddress::new(host.as_str(), *port))
             }
             ConnectionAddr::Unix(_) => Err(RedisError::from((
                 ErrorKind::InvalidClientConfig,
@@ -100,7 +100,7 @@ impl TryFrom<&ConnectionAddr> for NodeAddress {
 
 impl PartialEq<str> for NodeAddress {
     fn eq(&self, other: &str) -> bool {
-        if let Ok(parsed) = Self::try_from(other) {
+        if let Ok(parsed) = NodeAddress::try_from(other) {
             self == &parsed
         } else {
             false
@@ -159,18 +159,10 @@ pub(crate) fn get_connection_info(
     node: &NodeAddress,
     cluster_params: &ClusterParams,
 ) -> ConnectionInfo {
-    let mapped = cluster_params
-        .node_address_map
-        .as_ref()
-        .and_then(|map| map.get(node));
-    let (host, port) = match mapped {
-        Some(addr) => (addr.host().to_string(), addr.port()),
-        None => (node.host().to_string(), node.port()),
-    };
     ConnectionInfo {
         addr: get_connection_addr(
-            host,
-            port,
+            node.host().to_string(),
+            node.port(),
             cluster_params.tls,
             cluster_params.tls_params.clone(),
         ),
@@ -217,68 +209,6 @@ mod tests {
                     "Invalid node string",
                 ))),
             );
-        }
-    }
-
-    #[test]
-    fn get_connection_info_uses_node_address_map() {
-        let node = NodeAddress::new("10.0.0.1", 8501);
-        let mapped = NodeAddress::new("node1.westeurope.redis.azure.net", 8501);
-
-        let mut map = std::collections::HashMap::new();
-        map.insert(node.clone(), mapped);
-
-        let params = ClusterParams {
-            node_address_map: Some(map),
-            ..Default::default()
-        };
-
-        let info = get_connection_info(&node, &params);
-        match info.addr {
-            ConnectionAddr::Tcp(host, port) => {
-                assert_eq!(host, "node1.westeurope.redis.azure.net");
-                assert_eq!(port, 8501);
-            }
-            _ => panic!("expected Tcp connection addr"),
-        }
-    }
-
-    #[test]
-    fn get_connection_info_falls_back_without_mapping() {
-        let node = NodeAddress::new("10.0.0.1", 8501);
-        let other = NodeAddress::new("10.0.0.2", 8501);
-        let mapped = NodeAddress::new("node2.westeurope.redis.azure.net", 8501);
-
-        let mut map = std::collections::HashMap::new();
-        map.insert(other, mapped);
-
-        let params = ClusterParams {
-            node_address_map: Some(map),
-            ..Default::default()
-        };
-
-        let info = get_connection_info(&node, &params);
-        match info.addr {
-            ConnectionAddr::Tcp(host, port) => {
-                assert_eq!(host, "10.0.0.1");
-                assert_eq!(port, 8501);
-            }
-            _ => panic!("expected Tcp connection addr"),
-        }
-    }
-
-    #[test]
-    fn get_connection_info_without_map() {
-        let node = NodeAddress::new("10.0.0.1", 6379);
-        let params = ClusterParams::default();
-
-        let info = get_connection_info(&node, &params);
-        match info.addr {
-            ConnectionAddr::Tcp(host, port) => {
-                assert_eq!(host, "10.0.0.1");
-                assert_eq!(port, 6379);
-            }
-            _ => panic!("expected Tcp connection addr"),
         }
     }
 }

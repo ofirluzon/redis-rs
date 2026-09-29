@@ -9,7 +9,7 @@ use redis::{
     cluster::{self, ClusterClient, ClusterClientBuilder},
 };
 
-use redis::{IntoConnectionInfo, RedisError, RedisResult, Value};
+use redis::{IntoConnectionInfo, RedisResult, Value};
 
 #[cfg(feature = "cluster-async")]
 use redis::{RedisFuture, aio, cluster_async};
@@ -58,7 +58,7 @@ impl cluster_async::Connect for MockConnection {
             redis::ConnectionAddr::Tcp(addr, port) => (addr, *port),
             _ => unreachable!(),
         };
-        Box::pin(future::ok(Self {
+        Box::pin(future::ok(MockConnection {
             handler: HANDLERS
                 .read()
                 .unwrap()
@@ -81,7 +81,7 @@ impl cluster::Connect for MockConnection {
             redis::ConnectionAddr::Tcp(addr, port) => (addr, *port),
             _ => unreachable!(),
         };
-        Ok(Self {
+        Ok(MockConnection {
             handler: HANDLERS
                 .read()
                 .unwrap()
@@ -174,20 +174,18 @@ pub fn respond_startup_with_replica_using_config(
     cmd: &[u8],
     slots_config: Option<Vec<MockSlotRange>>,
 ) -> Result<(), RedisResult<Value>> {
-    let slots_config = slots_config.unwrap_or_else(|| {
-        vec![
-            MockSlotRange {
-                primary_port: 6379,
-                replica_ports: vec![6380],
-                slot_range: (0..8191),
-            },
-            MockSlotRange {
-                primary_port: 6381,
-                replica_ports: vec![6382],
-                slot_range: (8192..16383),
-            },
-        ]
-    });
+    let slots_config = slots_config.unwrap_or(vec![
+        MockSlotRange {
+            primary_port: 6379,
+            replica_ports: vec![6380],
+            slot_range: (0..8191),
+        },
+        MockSlotRange {
+            primary_port: 6381,
+            replica_ports: vec![6382],
+            slot_range: (8192..16383),
+        },
+    ]);
     if is_connection_check(cmd) {
         Err(Ok(Value::SimpleString("OK".into())))
     } else if contains_slice(cmd, b"CLUSTER") && contains_slice(cmd, b"SLOTS") {
@@ -215,13 +213,6 @@ pub fn respond_startup_with_replica_using_config(
     } else {
         Ok(())
     }
-}
-
-pub fn broken_pipe_error() -> RedisError {
-    RedisError::from(std::io::Error::new(
-        std::io::ErrorKind::BrokenPipe,
-        "mock-io-error",
-    ))
 }
 
 #[cfg(feature = "cluster-async")]
@@ -353,7 +344,7 @@ impl MockEnv {
         let async_connection = runtime
             .block_on(client.get_async_generic_connection())
             .unwrap();
-        Self {
+        MockEnv {
             #[cfg(feature = "cluster-async")]
             runtime,
             client,

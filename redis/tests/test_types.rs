@@ -235,7 +235,7 @@ mod types {
         for parse_mode in [RedisParseMode::Owned, RedisParseMode::Ref] {
             let simple_string_exp = "Simple string".to_string();
             let v = parse_mode.parse_redis_value(Value::SimpleString(simple_string_exp.clone()));
-            assert_eq!(v, Ok(Box::new(simple_string_exp)));
+            assert_eq!(v, Ok(Box::new(simple_string_exp.clone())));
         }
     }
 
@@ -740,7 +740,7 @@ mod types {
         assert_eq!(Arc::new(array.clone()).to_redis_args(), expected_array);
         assert_eq!(Arc::new(&array).to_redis_args(), expected_array);
         assert_eq!(Box::new(array.clone()).to_redis_args(), expected_array);
-        assert_eq!(Rc::new(array).to_redis_args(), expected_array);
+        assert_eq!(Rc::new(array.clone()).to_redis_args(), expected_array);
 
         let map = [("k1", "v1"), ("k2", "v2")]
             .into_iter()
@@ -886,7 +886,7 @@ mod types {
                         attributes: vec![(redis_value!(simple:"ttl"), redis_value!(3600))]
                     })
                 ])
-            );
+            )
         }
     }
 

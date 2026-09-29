@@ -8,7 +8,7 @@ use futures_util::{
 use std::pin::Pin;
 #[cfg(feature = "cache-aio")]
 use std::time::Duration;
-use std::{fmt, io::Write};
+use std::{fmt, io, io::Write};
 
 use crate::pipeline::Pipeline;
 use crate::types::{FromRedisValue, RedisResult, RedisWrite, ToRedisArgs, from_redis_value};
@@ -136,7 +136,7 @@ impl<T: FromRedisValue> Iterator for CheckedIter<'_, T> {
         loop {
             if let Some(value) = self.batch.next() {
                 return Some(value.map_err(|err| err.into()));
-            }
+            };
 
             if self.cmd.cursor? == 0 {
                 return None;
@@ -192,7 +192,7 @@ impl<'a, T: FromRedisValue + 'a> AsyncIterInner<'a, T> {
         loop {
             if let Some(v) = self.batch.next() {
                 return Some(v.map_err(|err| err.into()));
-            }
+            };
 
             if self.cmd.cursor? == 0 {
                 return None;
@@ -330,18 +330,19 @@ where
 
     cmd.reserve(totlen);
 
-    write_command(cmd, args, cursor);
+    write_command(cmd, args, cursor).unwrap()
 }
 
-fn write_command<'a, I>(cmd: &mut Vec<u8>, args: I, cursor: u64)
+fn write_command<'a, I>(cmd: &mut (impl ?Sized + Write), args: I, cursor: u64) -> io::Result<()>
 where
     I: IntoIterator<Item = Arg<&'a [u8]>> + Clone + ExactSizeIterator,
 {
     let mut buf = ::itoa::Buffer::new();
 
-    cmd.extend_from_slice(b"*");
-    cmd.extend_from_slice(buf.format(args.len()).as_bytes());
-    cmd.extend_from_slice(b"\r\n");
+    cmd.write_all(b"*")?;
+    let s = buf.format(args.len());
+    cmd.write_all(s.as_bytes())?;
+    cmd.write_all(b"\r\n")?;
 
     let mut cursor_bytes = itoa::Buffer::new();
     for item in args {
@@ -350,13 +351,15 @@ where
             Arg::Simple(val) => val,
         };
 
-        cmd.extend_from_slice(b"$");
-        cmd.extend_from_slice(buf.format(bytes.len()).as_bytes());
-        cmd.extend_from_slice(b"\r\n");
+        cmd.write_all(b"$")?;
+        let s = buf.format(bytes.len());
+        cmd.write_all(s.as_bytes())?;
+        cmd.write_all(b"\r\n")?;
 
-        cmd.extend_from_slice(bytes);
-        cmd.extend_from_slice(b"\r\n");
+        cmd.write_all(bytes)?;
+        cmd.write_all(b"\r\n")?;
     }
+    Ok(())
 }
 
 impl RedisWrite for Cmd {
@@ -448,8 +451,8 @@ impl RedisWrite for Cmd {
 }
 
 impl Default for Cmd {
-    fn default() -> Self {
-        Self::new()
+    fn default() -> Cmd {
+        Cmd::new()
     }
 }
 
@@ -482,8 +485,8 @@ impl Default for Cmd {
 /// ```
 impl Cmd {
     /// Creates a new empty command.
-    pub fn new() -> Self {
-        Self {
+    pub fn new() -> Cmd {
+        Cmd {
             data: vec![],
             args: vec![],
             cursor: None,
@@ -495,8 +498,8 @@ impl Cmd {
     }
 
     /// Creates a new empty command, with at least the requested capacity.
-    pub fn with_capacity(arg_count: usize, size_of_data: usize) -> Self {
-        Self {
+    pub fn with_capacity(arg_count: usize, size_of_data: usize) -> Cmd {
+        Cmd {
             data: Vec::with_capacity(size_of_data),
             args: Vec::with_capacity(arg_count),
             cursor: None,
@@ -558,7 +561,7 @@ impl Cmd {
     /// redis::cmd("SET").arg("my_key").arg(b"my_value");
     /// ```
     #[inline]
-    pub fn arg<T: ToRedisArgs>(&mut self, arg: T) -> &mut Self {
+    pub fn arg<T: ToRedisArgs>(&mut self, arg: T) -> &mut Cmd {
         arg.write_redis_args(self);
         self
     }
@@ -588,7 +591,7 @@ impl Cmd {
     /// }
     /// ```
     #[inline]
-    pub fn cursor_arg(&mut self, cursor: u64) -> &mut Self {
+    pub fn cursor_arg(&mut self, cursor: u64) -> &mut Cmd {
         self.cursor = Some(cursor);
         self.args.push(Arg::Cursor);
         self
@@ -618,11 +621,11 @@ impl Cmd {
     /// [`get_packed_command`]: Self::get_packed_command.
     #[inline]
     pub fn write_packed_command(&self, dst: &mut Vec<u8>) {
-        write_command_to_vec(dst, self.args_iter(), self.cursor.unwrap_or(0));
+        write_command_to_vec(dst, self.args_iter(), self.cursor.unwrap_or(0))
     }
 
     pub(crate) fn write_packed_command_preallocated(&self, cmd: &mut Vec<u8>) {
-        write_command(cmd, self.args_iter(), self.cursor.unwrap_or(0));
+        write_command(cmd, self.args_iter(), self.cursor.unwrap_or(0)).unwrap()
     }
 
     /// Returns true if the command is in scan mode.
@@ -799,7 +802,7 @@ impl Cmd {
     /// This is mostly set internally. The user can set it if they know that a certain command doesn't return a response, or if they use an async connection and don't want to wait for the server response.
     /// For sync connections, setting this wrongly can affect the connection's correctness, and should be avoided.
     #[inline]
-    pub fn set_no_response(&mut self, nr: bool) -> &mut Self {
+    pub fn set_no_response(&mut self, nr: bool) -> &mut Cmd {
         self.no_response = nr;
         self
     }
@@ -813,7 +816,7 @@ impl Cmd {
     /// Changes caching behaviour for this specific command.
     #[cfg(feature = "cache-aio")]
     #[cfg_attr(docsrs, doc(cfg(feature = "cache-aio")))]
-    pub fn set_cache_config(&mut self, command_cache_config: CommandCacheConfig) -> &mut Self {
+    pub fn set_cache_config(&mut self, command_cache_config: CommandCacheConfig) -> &mut Cmd {
         self.cache = Some(command_cache_config);
         self
     }

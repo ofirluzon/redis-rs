@@ -14,7 +14,7 @@ use crate::{
 };
 
 use futures_util::{future::BoxFuture, ready};
-use log::{trace, warn};
+use log::trace;
 use pin_project_lite::pin_project;
 use tokio::sync::oneshot;
 
@@ -35,7 +35,6 @@ pub(super) enum CmdArg<C> {
         count: usize,
         route: InternalSingleNodeRouting<C>,
     },
-    Reconnect(NodeAddress),
 }
 
 pub(super) enum Retry<C> {
@@ -55,8 +54,7 @@ impl<C> CmdArg<C> {
     fn set_redirect(&mut self, redirect: Option<Redirect>) {
         if let Some(redirect) = redirect {
             match self {
-                Self::Reconnect(_) => {}
-                Self::Cmd { routing, .. } => match routing {
+                CmdArg::Cmd { routing, .. } => match routing {
                     InternalRoutingInfo::SingleNode(route) => {
                         let redirect = InternalSingleNodeRouting::Redirect {
                             redirect,
@@ -66,11 +64,10 @@ impl<C> CmdArg<C> {
                         *routing = redirect;
                     }
                     InternalRoutingInfo::MultiNode(_) => {
-                        // Cannot redirect a multi-node request, so just ignore the redirect.
-                        warn!("Received a redirect for a multi-node request, ignoring it");
+                        panic!("Cannot redirect multinode requests")
                     }
                 },
-                Self::Pipeline { route, .. } => {
+                CmdArg::Pipeline { route, .. } => {
                     let redirect = InternalSingleNodeRouting::Redirect {
                         redirect,
                         previous_routing: Box::new(std::mem::take(route)),
@@ -83,25 +80,28 @@ impl<C> CmdArg<C> {
 
     fn reset_routing(&mut self) {
         let fix_route = |route: &mut InternalSingleNodeRouting<C>| {
-            while let InternalSingleNodeRouting::Redirect {
-                previous_routing, ..
-            } = route
-            {
-                *route = std::mem::take(previous_routing.as_mut());
-            }
-
-            if let InternalSingleNodeRouting::Connection { identifier, .. } = route {
-                *route = InternalSingleNodeRouting::ByAddress(std::mem::take(identifier));
+            match route {
+                InternalSingleNodeRouting::Redirect {
+                    previous_routing, ..
+                } => {
+                    let previous_routing = std::mem::take(previous_routing.as_mut());
+                    *route = previous_routing;
+                }
+                // If a specific connection is specified, then reconnecting without resetting the routing
+                // will mean that the request is still routed to the old connection.
+                InternalSingleNodeRouting::Connection { identifier, .. } => {
+                    *route = InternalSingleNodeRouting::ByAddress(std::mem::take(identifier));
+                }
+                _ => {}
             }
         };
         match self {
-            Self::Reconnect(_) => {}
-            Self::Cmd { routing, .. } => {
+            CmdArg::Cmd { routing, .. } => {
                 if let InternalRoutingInfo::SingleNode(route) = routing {
                     fix_route(route);
                 }
             }
-            Self::Pipeline { route, .. } => {
+            CmdArg::Pipeline { route, .. } => {
                 fix_route(route);
             }
         }
@@ -133,15 +133,15 @@ pub(super) enum ResultExpectation {
 impl ResultExpectation {
     pub(super) fn send(self, result: RedisResult<Response>) {
         let _ = match self {
-            Self::External(sender) => sender.send(result),
-            Self::Internal => Ok(()),
+            ResultExpectation::External(sender) => sender.send(result),
+            ResultExpectation::Internal => Ok(()),
         };
     }
 
     pub(super) fn is_closed(&self) -> bool {
         match self {
-            Self::External(sender) => sender.is_closed(),
-            Self::Internal => false,
+            ResultExpectation::External(sender) => sender.is_closed(),
+            ResultExpectation::Internal => false,
         }
     }
 }
@@ -166,16 +166,6 @@ pub(crate) fn choose_response<C>(
     mut request: PendingRequest<C>,
     retry_params: &RetryParams,
 ) -> (Option<Retry<C>>, PollFlushAction) {
-    // Reconnect requests are internal signals - just trigger reconnect, no retry.
-    if let CmdArg::Reconnect(addr) = &request.cmd {
-        let addr = addr.clone();
-        request.sender.send(Ok(Response::Single(crate::Value::Nil)));
-        return (
-            None,
-            PollFlushAction::Reconnect(std::collections::HashSet::from([addr])),
-        );
-    }
-
     let (target, result) = result;
     let err = match result {
         Ok(item) => {
@@ -278,7 +268,10 @@ pub(crate) fn choose_response<C>(
                 // No redirect address is available (e.g. READONLY), so re-route by slot
                 // against the refreshed topology.
                 request.cmd.reset_routing();
-                Retry::MoveToPending { request }
+                Retry::AfterSleep {
+                    request,
+                    sleep_duration,
+                }
             });
             (retry, PollFlushAction::RebuildSlots)
         }
@@ -312,7 +305,7 @@ impl<C> Future for Request<C> {
         let mut this = self.as_mut().project();
         if this.request.is_none() || this.request.as_ref().unwrap().sender.is_closed() {
             return Poll::Ready((None, PollFlushAction::None));
-        }
+        };
 
         let future = match this.future.as_mut().project() {
             RequestStateProj::Future { future } => future,
@@ -366,7 +359,6 @@ mod tests {
                 InternalSingleNodeRouting::Redirect { redirect, .. } => Some(redirect.clone()),
                 _ => None,
             },
-            CmdArg::Reconnect(_) => None,
         }
     }
 
@@ -417,7 +409,7 @@ mod tests {
             assert_eq!(get_redirect(&request), Some(Redirect::Ask(ADDRESS)));
         } else {
             panic!("Expected retry");
-        }
+        };
         assert_eq!(next, PollFlushAction::None);
 
         // try the same, without remaining retries
@@ -443,7 +435,7 @@ mod tests {
             assert_eq!(get_redirect(&request), Some(Redirect::Moved(ADDRESS)));
         } else {
             panic!("Expected retry");
-        }
+        };
         assert_eq!(next, PollFlushAction::RebuildSlots);
         assert_matches!(receiver.try_recv(), Err(_));
 
@@ -468,11 +460,11 @@ mod tests {
 
         // READONLY has no redirect address, so the request keeps its (slot-based) routing
         // and is retried after a sleep once the slot map has been rebuilt.
-        if let Some(super::Retry::MoveToPending { request }) = retry {
+        if let Some(super::Retry::AfterSleep { request, .. }) = retry {
             assert!(get_redirect(&request).is_none());
         } else {
-            panic!("Expected a move-to-pending");
-        }
+            panic!("Expected a sleep-then-retry");
+        };
         assert_eq!(next, PollFlushAction::RebuildSlots);
         assert_matches!(receiver.try_recv(), Err(_));
 
@@ -514,7 +506,7 @@ mod tests {
             assert!(get_redirect(&request).is_none());
         } else {
             panic!("Expected retry");
-        }
+        };
         assert_eq!(next, PollFlushAction::RebuildSlots);
 
         // try the same, without remaining retries
@@ -541,7 +533,7 @@ mod tests {
             assert!(get_redirect(&request).is_none());
         } else {
             panic!("Expected retry");
-        }
+        };
         assert_eq!(next, PollFlushAction::ReconnectFromInitialConnections);
 
         // try the same, with a different target
@@ -554,7 +546,7 @@ mod tests {
             assert!(get_redirect(&request).is_none());
         } else {
             panic!("Expected retry");
-        }
+        };
         assert_eq!(next, PollFlushAction::ReconnectFromInitialConnections);
 
         // and another target
@@ -567,7 +559,7 @@ mod tests {
             assert!(get_redirect(&request).is_none());
         } else {
             panic!("Expected retry");
-        }
+        };
         assert_eq!(next, PollFlushAction::ReconnectFromInitialConnections);
     }
 }

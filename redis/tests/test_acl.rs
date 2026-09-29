@@ -6,54 +6,6 @@ use std::collections::HashSet;
 
 mod support;
 use crate::support::*;
-use crate::utils::needs_sanitize_payload;
-
-mod utils {
-    use super::*;
-    /// Check if `sanitize-payload` should be present or not.
-    ///
-    /// Valkey started to always deep-sanitize data upload loading, which made `sanitize-payload` moot.
-    /// Hence, they removed it in:
-    /// * 9.2 onwards.
-    /// * 9.1.2 onwards,
-    /// * 9.0.6 onwards,
-    /// * 8.1.10 onwards
-    /// * 8.0.11 onwards, and
-    /// * 7.2.15 onwards (if that'll be released in the future).
-    ///
-    /// See https://github.com/valkey-io/valkey/pull/3721 and for example their commit `e4fdae4`.
-    ///
-    /// As this condition is longish, we put it in a dedicated function
-    pub fn needs_sanitize_payload(ctx: &TestContext) -> bool {
-        // This acl drop only affects Valkey, so other vendors are out.
-        if !ctx.supports(VALKEY_ANY) {
-            return true;
-        }
-
-        // Above 9.2, no Valkey version needs it
-        if ctx.supports(VALKEY_9_2) {
-            return false;
-        }
-
-        if ctx.supports(VALKEY_9_1) {
-            return !ctx.supports(VALKEY_9_1_2);
-        }
-
-        if ctx.supports(VALKEY_9_0) {
-            return !ctx.supports(VALKEY_9_0_6);
-        }
-
-        if ctx.supports(VALKEY_8_1) {
-            return !ctx.supports(VALKEY_8_1_10);
-        }
-
-        if ctx.supports(VALKEY_8_0) {
-            return !ctx.supports(VALKEY_8_0_11);
-        }
-
-        !ctx.supports(VALKEY_7_2_15)
-    }
-}
 
 #[test]
 fn test_acl_whoami() {
@@ -269,11 +221,10 @@ fn test_acl_info() {
     let info = conn.acl_getuser(username).expect("Got user");
     assert!(info.is_some());
     let info = info.expect("Got asynq");
-    let mut expected_flags = vec![Rule::On];
-    if needs_sanitize_payload(&ctx) {
-        expected_flags.push(Rule::Other("sanitize-payload".to_string()));
-    }
-    assert_eq!(info.flags, expected_flags);
+    assert_eq!(
+        info.flags,
+        vec![Rule::On, Rule::Other("sanitize-payload".to_string())]
+    );
     assert_eq!(
         info.passwords,
         vec![Rule::AddHashedPass(
@@ -329,11 +280,14 @@ fn test_acl_sample_info() {
         .expect("Set sample user");
     let sample_user = conn.acl_getuser("sample").expect("Got user");
     let sample_user = sample_user.expect("Got sample user");
-    let mut expected_flags = vec![Rule::On, Rule::NoPass];
-    if needs_sanitize_payload(&ctx) {
-        expected_flags.push(Rule::Other("sanitize-payload".to_string()));
-    }
-    assert_eq!(sample_user.flags, expected_flags);
+    assert_eq!(
+        sample_user.flags,
+        vec![
+            Rule::On,
+            Rule::NoPass,
+            Rule::Other("sanitize-payload".to_string())
+        ]
+    );
     assert_eq!(sample_user.passwords, vec![]);
     assert_eq!(
         sample_user.commands,
@@ -354,11 +308,7 @@ fn test_acl_sample_info() {
     );
 }
 
-#[cfg(all(
-    feature = "acl",
-    feature = "aio",
-    feature = "token-based-authentication"
-))]
+#[cfg(all(feature = "acl", feature = "token-based-authentication"))]
 mod token_based_authentication_acl_tests {
     use crate::support::*;
     use futures_channel::oneshot;
@@ -671,7 +621,7 @@ mod token_based_authentication_acl_tests {
     }
 
     #[async_test]
-    async fn test_authentication_with_mock_streaming_credentials_provider() {
+    async fn authentication_with_mock_streaming_credentials_provider() {
         init_logger();
         let ctx = TestContext::new();
         // Set up a Redis user that expects a JWT token as password
@@ -811,7 +761,7 @@ mod token_based_authentication_acl_tests {
     }
 
     #[async_test]
-    async fn test_authentication_error_handling_with_mock_streaming_credentials_provider() {
+    async fn authentication_error_handling_with_mock_streaming_credentials_provider() {
         init_logger();
         let ctx = TestContext::new();
         let whoami_cmd = redis::cmd("ACL").arg("WHOAMI").clone();
@@ -870,7 +820,7 @@ mod token_based_authentication_acl_tests {
     }
 
     #[async_test]
-    async fn test_multiple_connections_from_one_client_sharing_a_single_credentials_provider() {
+    async fn multiple_connections_from_one_client_sharing_a_single_credentials_provider() {
         init_logger();
         let ctx = TestContext::new();
         let whoami_cmd = redis::cmd("ACL").arg("WHOAMI").clone();
@@ -937,7 +887,7 @@ mod token_based_authentication_acl_tests {
     }
 
     #[async_test]
-    async fn test_multiple_clients_sharing_a_single_credentials_provider() {
+    async fn multiple_clients_sharing_a_single_credentials_provider() {
         init_logger();
         let ctx1 = TestContext::new();
         let whoami_cmd = redis::cmd("ACL").arg("WHOAMI").clone();
@@ -1008,7 +958,7 @@ mod token_based_authentication_acl_tests {
     /// 4. Admin invalidates Alice via ACL DELUSER
     /// 5. The server rejects the next command — proving we rely on the server for auth enforcement
     #[async_test]
-    async fn test_server_rejects_after_user_invalidated() {
+    async fn server_rejects_after_user_invalidated() {
         init_logger();
         let ctx = TestContext::new();
 
@@ -1101,7 +1051,7 @@ mod token_based_authentication_acl_tests {
         }
 
         #[async_test]
-        async fn test_cluster_authentication_with_mock_streaming_credentials_provider() {
+        async fn cluster_authentication_with_mock_streaming_credentials_provider() {
             init_logger();
             let cluster = TestClusterContext::new_with_cluster_client_builder(
                 |builder: ClusterClientBuilder| {
@@ -1139,7 +1089,7 @@ mod token_based_authentication_acl_tests {
         }
 
         #[async_test]
-        async fn test_cluster_token_rotation_with_mock_streaming_credentials_provider() {
+        async fn cluster_token_rotation_with_mock_streaming_credentials_provider() {
             init_logger();
             let cluster = TestClusterContext::new_with_cluster_client_builder(
                 |builder: ClusterClientBuilder| {
@@ -1169,8 +1119,7 @@ mod token_based_authentication_acl_tests {
         }
 
         #[async_test]
-        async fn test_cluster_authentication_error_handling_with_mock_streaming_credentials_provider()
-         {
+        async fn cluster_authentication_error_handling_with_mock_streaming_credentials_provider() {
             init_logger();
             let cluster = TestClusterContext::new_with_cluster_client_builder(
                 |builder: ClusterClientBuilder| {
@@ -1206,7 +1155,7 @@ mod token_based_authentication_acl_tests {
         }
 
         #[async_test]
-        async fn test_cluster_multiple_connections_sharing_a_single_credentials_provider() {
+        async fn cluster_multiple_connections_sharing_a_single_credentials_provider() {
             init_logger();
             let cluster = TestClusterContext::new_with_cluster_client_builder(
                 |builder: ClusterClientBuilder| {
@@ -1248,7 +1197,7 @@ mod token_based_authentication_acl_tests {
         }
 
         #[async_test]
-        async fn test_cluster_multiple_clients_sharing_a_single_credentials_provider() {
+        async fn cluster_multiple_clients_sharing_a_single_credentials_provider() {
             init_logger();
             let cluster = TestClusterContext::new();
 
@@ -1317,7 +1266,7 @@ mod token_based_authentication_acl_tests {
         /// 4. Admin invalidates Alice via ACL DELUSER on all nodes
         /// 5. The server rejects the next command — proving we rely on the server for auth enforcement
         #[async_test]
-        async fn test_cluster_server_rejects_after_user_invalidated() {
+        async fn cluster_server_rejects_after_user_invalidated() {
             init_logger();
             let cluster = TestClusterContext::new_with_cluster_client_builder(
                 |builder: ClusterClientBuilder| {

@@ -46,8 +46,6 @@ pub struct ConnectionManagerConfig {
     pub(crate) cache_config: Option<crate::caching::CacheConfig>,
     pipeline_buffer_size: Option<usize>,
     concurrency_limit: Option<usize>,
-    /// Flush threshold for the outbound write buffer; see [`AsyncConnectionConfig::set_write_backpressure_boundary`].
-    write_backpressure_boundary: Option<usize>,
     /// Optional credentials provider for dynamic authentication (e.g., token-based authentication)
     #[cfg(feature = "token-based-authentication")]
     credentials_provider: Option<std::sync::Arc<dyn crate::auth::StreamingCredentialsProvider>>,
@@ -68,7 +66,6 @@ impl std::fmt::Debug for ConnectionManagerConfig {
             cache_config,
             pipeline_buffer_size,
             concurrency_limit,
-            write_backpressure_boundary,
             #[cfg(feature = "token-based-authentication")]
             credentials_provider,
         } = &self;
@@ -82,7 +79,6 @@ impl std::fmt::Debug for ConnectionManagerConfig {
             .field("resubscribe_automatically", &resubscribe_automatically)
             .field("pipeline_buffer_size", &pipeline_buffer_size)
             .field("concurrency_limit", &concurrency_limit)
-            .field("write_backpressure_boundary", &write_backpressure_boundary)
             .field(
                 "push_sender",
                 if push_sender.is_some() {
@@ -165,26 +161,26 @@ impl ConnectionManagerConfig {
     }
 
     /// Set the minimal delay for reconnect attempts.
-    pub fn set_min_delay(mut self, min_delay: Duration) -> Self {
+    pub fn set_min_delay(mut self, min_delay: Duration) -> ConnectionManagerConfig {
         self.min_delay = min_delay;
         self
     }
 
     /// Apply a maximum delay between connection attempts. The delay between attempts won't be longer than max_delay milliseconds.
-    pub fn set_max_delay(mut self, time: Duration) -> Self {
+    pub fn set_max_delay(mut self, time: Duration) -> ConnectionManagerConfig {
         self.max_delay = Some(time);
         self
     }
 
     /// The resulting duration is calculated by taking the base to the `n`-th power,
     /// where `n` denotes the number of past attempts.
-    pub fn set_exponent_base(mut self, base: f32) -> Self {
+    pub fn set_exponent_base(mut self, base: f32) -> ConnectionManagerConfig {
         self.exponent_base = base;
         self
     }
 
     /// number_of_retries times, with an exponentially increasing delay.
-    pub fn set_number_of_retries(mut self, amount: usize) -> Self {
+    pub fn set_number_of_retries(mut self, amount: usize) -> ConnectionManagerConfig {
         self.number_of_retries = amount;
         self
     }
@@ -192,7 +188,7 @@ impl ConnectionManagerConfig {
     /// The new connection will time out operations after `response_timeout` has passed.
     ///
     /// Set `None` if you don't want requests to time out.
-    pub fn set_response_timeout(mut self, duration: Option<Duration>) -> Self {
+    pub fn set_response_timeout(mut self, duration: Option<Duration>) -> ConnectionManagerConfig {
         self.response_timeout = duration;
         self
     }
@@ -200,7 +196,7 @@ impl ConnectionManagerConfig {
     /// Each connection attempt to the server will time out after `connection_timeout`.
     ///
     /// Set `None` if you don't want the connection attempt to time out.
-    pub fn set_connection_timeout(mut self, duration: Option<Duration>) -> Self {
+    pub fn set_connection_timeout(mut self, duration: Option<Duration>) -> ConnectionManagerConfig {
         self.connection_timeout = duration;
         self
     }
@@ -277,15 +273,6 @@ impl ConnectionManagerConfig {
         self
     }
 
-    /// Sets the flush threshold (backpressure boundary) for the outbound write buffer.
-    ///
-    /// See [`AsyncConnectionConfig::set_write_backpressure_boundary`] for full semantics.
-    /// When left unset, the connection keeps `tokio_util`'s default boundary.
-    pub fn set_write_backpressure_boundary(mut self, boundary: usize) -> Self {
-        self.write_backpressure_boundary = Some(boundary);
-        self
-    }
-
     /// Sets a credentials provider for dynamic authentication.
     ///
     /// This is useful for token-based authentication where credentials need to be
@@ -332,7 +319,6 @@ impl Default for ConnectionManagerConfig {
             cache_config: None,
             pipeline_buffer_size: None,
             concurrency_limit: None,
-            write_backpressure_boundary: None,
             #[cfg(feature = "token-based-authentication")]
             credentials_provider: None,
         }
@@ -454,7 +440,7 @@ impl ConnectionManager {
 
         // Trigger the connection by loading and awaiting it
         let guard = manager.0.connection.load();
-        (**guard).clone().await?;
+        (**guard).clone().await.map_err(|e| e.clone())?;
 
         Ok(manager)
     }
@@ -490,7 +476,6 @@ impl ConnectionManager {
             .set_response_timeout(config.response_timeout);
         connection_config.pipeline_buffer_size = config.pipeline_buffer_size;
         connection_config.concurrency_limit = config.concurrency_limit;
-        connection_config.write_backpressure_boundary = config.write_backpressure_boundary;
 
         #[cfg(feature = "cache-aio")]
         let cache_manager = config
@@ -532,9 +517,11 @@ impl ConnectionManager {
                 connection_config.set_push_sender_internal(Arc::new(internal_sender));
         }
 
-        let subscription_tracker = config
-            .resubscribe_automatically
-            .then(|| Mutex::new(SubscriptionTracker::default()));
+        let subscription_tracker = if config.resubscribe_automatically {
+            Some(Mutex::new(SubscriptionTracker::default()))
+        } else {
+            None
+        };
 
         let client_clone = client.clone();
         let retry_strategy_clone = retry_strategy;
@@ -578,7 +565,7 @@ impl ConnectionManager {
                         "Failed to set automatic resubscription",
                     ))
                 })?;
-        }
+        };
 
         Ok(new_self)
     }
@@ -691,7 +678,7 @@ impl ConnectionManager {
     pub async fn send_packed_command(&mut self, cmd: &Cmd) -> RedisResult<Value> {
         // Clone connection to avoid having to lock the ArcSwap in write mode
         let guard = self.0.connection.load();
-        let connection_result = (**guard).clone().await;
+        let connection_result = (**guard).clone().await.map_err(|e| e.clone());
         reconnect_if_io_error!(self, connection_result, guard);
         let result = connection_result?.send_packed_command(cmd).await;
         reconnect_if_dropped!(self, &result, guard);
@@ -709,7 +696,7 @@ impl ConnectionManager {
     ) -> RedisResult<Vec<Value>> {
         // Clone shared connection future to avoid having to lock the ArcSwap in write mode
         let guard = self.0.connection.load();
-        let connection_result = (**guard).clone().await;
+        let connection_result = (**guard).clone().await.map_err(|e| e.clone());
         reconnect_if_io_error!(self, connection_result, guard);
         let result = connection_result?
             .send_packed_commands(cmd, offset, count)
@@ -835,11 +822,11 @@ impl ConnectionLike for ConnectionManager {
 
     fn req_packed_commands<'a>(
         &'a mut self,
-        pipeline: &'a crate::Pipeline,
+        cmd: &'a crate::Pipeline,
         offset: usize,
         count: usize,
     ) -> RedisFuture<'a, Vec<Value>> {
-        (async move { self.send_packed_commands(pipeline, offset, count).await }).boxed()
+        (async move { self.send_packed_commands(cmd, offset, count).await }).boxed()
     }
 
     fn get_db(&self) -> i64 {
@@ -876,20 +863,7 @@ mod tests {
     }
 
     #[test]
-    fn test_connection_manager_config_write_backpressure_boundary_default() {
-        let config = ConnectionManagerConfig::new();
-        assert_eq!(config.write_backpressure_boundary, None);
-    }
-
-    #[test]
-    fn test_connection_manager_config_write_backpressure_boundary_custom() {
-        let config =
-            ConnectionManagerConfig::new().set_write_backpressure_boundary(16 * 1024 * 1024);
-        assert_eq!(config.write_backpressure_boundary, Some(16 * 1024 * 1024));
-    }
-
-    #[tokio::test]
-    async fn test_lazy_connection_manager_with_config() {
+    fn test_lazy_connection_manager_with_config() {
         // Test that lazy connection manager can be created with custom config
         let client = Client::open("redis://127.0.0.1/").unwrap();
         let config = ConnectionManagerConfig::new()
@@ -897,19 +871,7 @@ mod tests {
             .set_concurrency_limit(128)
             .set_number_of_retries(3);
         let result = ConnectionManager::new_lazy_with_config(client, config);
-        result.unwrap();
-    }
-
-    #[tokio::test]
-    async fn test_lazy_connection_manager_wires_write_backpressure_boundary() {
-        let client = Client::open("redis://127.0.0.1/").unwrap();
-        let config =
-            ConnectionManagerConfig::new().set_write_backpressure_boundary(16 * 1024 * 1024);
-        let manager = ConnectionManager::new_lazy_with_config(client, config).unwrap();
-        assert_eq!(
-            manager.0.connection_config.write_backpressure_boundary,
-            Some(16 * 1024 * 1024)
-        );
+        assert!(result.is_ok());
     }
 
     #[test]

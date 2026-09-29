@@ -40,13 +40,13 @@ pub struct Pipeline {
 impl Pipeline {
     /// Creates an empty pipeline.  For consistency with the `cmd`
     /// api a `pipe` function is provided as alias.
-    pub fn new() -> Self {
+    pub fn new() -> Pipeline {
         Self::with_capacity(0)
     }
 
     /// Creates an empty pipeline with pre-allocated capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
+    pub fn with_capacity(capacity: usize) -> Pipeline {
+        Pipeline {
             commands: Vec::with_capacity(capacity),
             transaction_mode: false,
             ignored_commands: HashSet::new(),
@@ -68,7 +68,7 @@ impl Pipeline {
     ///     .cmd("GET").arg("key_2").query(&mut con).unwrap();
     /// ```
     #[inline]
-    pub fn atomic(&mut self) -> &mut Self {
+    pub fn atomic(&mut self) -> &mut Pipeline {
         self.transaction_mode = true;
         self
     }
@@ -118,7 +118,7 @@ impl Pipeline {
     /// assert!(results[2].is_ok()); // get succeeded
     /// ```
     #[inline]
-    pub fn ignore_errors(&mut self) -> &mut Self {
+    pub fn ignore_errors(&mut self) -> &mut Pipeline {
         self.ignore_errors = true;
         self
     }
@@ -358,12 +358,6 @@ macro_rules! implement_pipeline_commands {
             }
 
             fn filter_ignored_results(&self, resp: Vec<Value>) -> Vec<Value> {
-                // Common case: nothing was `.ignore()`d, so every result is kept.
-                // Return the response as-is instead of rebuilding the whole
-                // `Vec<Value>` (which would reallocate and move every element).
-                if self.ignored_commands.is_empty() {
-                    return resp;
-                }
                 resp.into_iter()
                     .enumerate()
                     .filter_map(|(index, result)| {
@@ -489,6 +483,6 @@ mod tests {
             result[1]
                 .clone()
                 .is_err_and(|e| e.to_string().contains("CrossSlot"))
-        );
+        )
     }
 }

@@ -31,14 +31,14 @@ pub struct TestClusterContext {
 }
 
 impl TestClusterContext {
-    pub fn new() -> Self {
+    pub fn new() -> TestClusterContext {
         Self::new_with_config(RedisClusterConfiguration {
             tls_insecure: false,
             ..Default::default()
         })
     }
 
-    pub fn new_with_mtls() -> Self {
+    pub fn new_with_mtls() -> TestClusterContext {
         Self::new_with_config_and_builder(
             RedisClusterConfiguration {
                 mtls_enabled: true,
@@ -49,7 +49,7 @@ impl TestClusterContext {
         )
     }
 
-    pub fn new_without_ip_alts() -> Self {
+    pub fn new_without_ip_alts() -> TestClusterContext {
         Self::new_with_config_and_builder(
             RedisClusterConfiguration {
                 tls_insecure: false,
@@ -60,11 +60,11 @@ impl TestClusterContext {
         )
     }
 
-    pub fn new_with_config(cluster_config: RedisClusterConfiguration) -> Self {
+    pub fn new_with_config(cluster_config: RedisClusterConfiguration) -> TestClusterContext {
         Self::new_with_config_and_builder(cluster_config, identity)
     }
 
-    pub fn new_with_cluster_client_builder<F>(initializer: F) -> Self
+    pub fn new_with_cluster_client_builder<F>(initializer: F) -> TestClusterContext
     where
         F: FnOnce(redis::cluster::ClusterClientBuilder) -> redis::cluster::ClusterClientBuilder,
     {
@@ -77,7 +77,7 @@ impl TestClusterContext {
         )
     }
 
-    pub fn new_insecure_with_cluster_client_builder<F>(initializer: F) -> Self
+    pub fn new_insecure_with_cluster_client_builder<F>(initializer: F) -> TestClusterContext
     where
         F: FnOnce(redis::cluster::ClusterClientBuilder) -> redis::cluster::ClusterClientBuilder,
     {
@@ -87,7 +87,7 @@ impl TestClusterContext {
     pub fn new_with_config_and_builder<F>(
         cluster_config: RedisClusterConfiguration,
         initializer: F,
-    ) -> Self
+    ) -> TestClusterContext
     where
         F: FnOnce(redis::cluster::ClusterClientBuilder) -> redis::cluster::ClusterClientBuilder,
     {
@@ -114,7 +114,7 @@ impl TestClusterContext {
 
         let client = builder.build().unwrap();
 
-        Self {
+        TestClusterContext {
             cluster,
             client,
             mtls_enabled,
@@ -225,8 +225,8 @@ impl TestClusterContext {
         self.nodes
             .iter()
             .map(|info| match info.addr() {
-                redis::ConnectionAddr::Tcp(_, port)
-                | redis::ConnectionAddr::TcpTls { port, .. } => *port,
+                redis::ConnectionAddr::Tcp(_, port) => *port,
+                redis::ConnectionAddr::TcpTls { port, .. } => *port,
                 _ => {
                     panic!("Unsupported address type for cluster tests")
                 }
