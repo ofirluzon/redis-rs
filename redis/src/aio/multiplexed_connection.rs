@@ -165,7 +165,7 @@ fn send_disconnect(push_sender: &mut Option<Arc<dyn AsyncPushSender>>) {
 
 impl<T> PipelineSink<T>
 where
-    T: Stream<Item = RedisResult<Value>> + 'static,
+    T: Stream<Item = RedisResult<Value>> + TrimDrainedWriteBuffer + 'static,
 {
     fn new(
         sink_stream: T,
@@ -206,7 +206,7 @@ where
     }
 
     fn send_result(self: Pin<&mut Self>, result: RedisResult<Value>) {
-        let self_ = self.project();
+        let mut self_ = self.project();
         let result = match result {
             // If this push message isn't a reply, we'll pass it as-is to the push manager and stop iterating
             Ok(Value::Push { kind, data }) if !kind.has_reply() => {
@@ -310,6 +310,12 @@ where
                 }
             }
         }
+
+        // A busy connection benefits from reusing its write allocation. Once
+        // the last reply arrives, the connection is idle and can release it.
+        if self_.in_flight.is_empty() {
+            self_.sink_stream.as_mut().trim_drained_write_buffer();
+        }
     }
 
     fn send_disconnect_if_needed(self: Pin<&mut Self>, err: &RedisError) {
@@ -410,18 +416,14 @@ where
         if matches!(self.as_mut().poll_read(cx), Poll::Ready(Err(()))) {
             return Poll::Ready(Err(()));
         }
-        let result = {
-            let mut sink_stream = self.as_mut().project().sink_stream;
-            let result = sink_stream.as_mut().poll_flush(cx);
-            if matches!(result, Poll::Ready(Ok(()))) {
-                sink_stream.trim_drained_write_buffer();
-            }
-            result
-        };
-        result.map_err(|err| {
-            self.as_mut().send_disconnect_if_needed(&err);
-            self.send_result(Err(err));
-        })
+        self.as_mut()
+            .project()
+            .sink_stream
+            .poll_flush(cx)
+            .map_err(|err| {
+                self.as_mut().send_disconnect_if_needed(&err);
+                self.send_result(Err(err));
+            })
     }
 
     fn poll_close(
@@ -1071,6 +1073,7 @@ mod tests {
             .unwrap();
         pipeline.flush().await.unwrap();
         assert!(pipeline.sink_stream.write_buffer().is_empty());
+        Pin::new(&mut pipeline).send_result(Ok(Value::Okay));
         pipeline.sink_stream.write_buffer_mut().reserve(8 * 1024);
         assert!(
             pipeline.sink_stream.write_buffer().capacity() <= 64 * 1024,
