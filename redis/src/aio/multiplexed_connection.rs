@@ -133,7 +133,7 @@ pin_project! {
     struct PipelineSink<T> {
         #[pin]
         sink_stream: T,
-        large_write_pending_flush: bool,
+        write_bytes_pending_flush: usize,
         in_flight: VecDeque<InFlight>,
         error: Option<RedisError>,
         push_sender: Option<Arc<dyn AsyncPushSender>>,
@@ -146,7 +146,7 @@ pin_project! {
     struct PipelineSink<T> {
         #[pin]
         sink_stream: T,
-        large_write_pending_flush: bool,
+        write_bytes_pending_flush: usize,
         in_flight: VecDeque<InFlight>,
         error: Option<RedisError>,
         push_sender: Option<Arc<dyn AsyncPushSender>>,
@@ -179,7 +179,7 @@ where
     {
         Self {
             sink_stream,
-            large_write_pending_flush: false,
+            write_bytes_pending_flush: 0,
             in_flight: VecDeque::new(),
             error: None,
             push_sender,
@@ -386,10 +386,11 @@ where
             return Err(());
         }
 
-        let large_request = input.len() > crate::parser::MAX_IDLE_CODEC_BUFFER;
+        let write_bytes = input.len();
         match self_.sink_stream.start_send(input) {
             Ok(()) => {
-                *self_.large_write_pending_flush |= large_request;
+                *self_.write_bytes_pending_flush =
+                    self_.write_bytes_pending_flush.saturating_add(write_bytes);
                 let response_aggregate = ResponseAggregate::new(expectation);
                 let entry = InFlight {
                     output,
@@ -424,11 +425,13 @@ where
         let result = {
             let mut self_ = self.as_mut().project();
             let result = self_.sink_stream.as_mut().poll_flush(cx);
-            // Small requests dominate many workloads. Only check the codec
-            // buffer after a request large enough to retain an allocation.
-            if matches!(result, Poll::Ready(Ok(()))) && *self_.large_write_pending_flush {
-                self_.sink_stream.trim_drained_write_buffer();
-                *self_.large_write_pending_flush = false;
+            // Batches of small requests can also grow the codec's write
+            // buffer. Skip the codec check for a small flushed batch.
+            if matches!(result, Poll::Ready(Ok(()))) {
+                if *self_.write_bytes_pending_flush > crate::parser::MAX_IDLE_CODEC_BUFFER {
+                    self_.sink_stream.trim_drained_write_buffer();
+                }
+                *self_.write_bytes_pending_flush = 0;
             }
             result
         };
@@ -1061,6 +1064,36 @@ impl MultiplexedConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn batched_small_writes_release_large_drained_buffer() {
+        use futures_util::SinkExt;
+
+        let (client, _server) = tokio::io::duplex(1024 * 1024);
+        let mut pipeline = PipelineSink::new(
+            ValueCodec::default().framed(client),
+            None,
+            #[cfg(feature = "cache-aio")]
+            None,
+        );
+        for _ in 0..8 {
+            Pin::new(&mut pipeline)
+                .start_send(PipelineMessage {
+                    input: vec![b'x'; 16 * 1024],
+                    output: None,
+                    expectation: None,
+                })
+                .unwrap();
+        }
+        pipeline.flush().await.unwrap();
+        assert!(pipeline.sink_stream.write_buffer().is_empty());
+        pipeline.sink_stream.write_buffer_mut().reserve(8 * 1024);
+        assert!(
+            pipeline.sink_stream.write_buffer().capacity() <= 64 * 1024,
+            "batched write buffer retained {} bytes",
+            pipeline.sink_stream.write_buffer().capacity()
+        );
+    }
 
     #[tokio::test]
     async fn large_write_is_released_when_connection_becomes_idle() {
