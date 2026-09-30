@@ -133,6 +133,7 @@ pin_project! {
     struct PipelineSink<T> {
         #[pin]
         sink_stream: T,
+        large_write_pending_flush: bool,
         in_flight: VecDeque<InFlight>,
         error: Option<RedisError>,
         push_sender: Option<Arc<dyn AsyncPushSender>>,
@@ -145,6 +146,7 @@ pin_project! {
     struct PipelineSink<T> {
         #[pin]
         sink_stream: T,
+        large_write_pending_flush: bool,
         in_flight: VecDeque<InFlight>,
         error: Option<RedisError>,
         push_sender: Option<Arc<dyn AsyncPushSender>>,
@@ -177,6 +179,7 @@ where
     {
         Self {
             sink_stream,
+            large_write_pending_flush: false,
             in_flight: VecDeque::new(),
             error: None,
             push_sender,
@@ -383,8 +386,10 @@ where
             return Err(());
         }
 
+        let large_request = input.len() > crate::parser::MAX_IDLE_CODEC_BUFFER;
         match self_.sink_stream.start_send(input) {
             Ok(()) => {
+                *self_.large_write_pending_flush |= large_request;
                 let response_aggregate = ResponseAggregate::new(expectation);
                 let entry = InFlight {
                     output,
@@ -416,14 +421,21 @@ where
         if matches!(self.as_mut().poll_read(cx), Poll::Ready(Err(()))) {
             return Poll::Ready(Err(()));
         }
-        self.as_mut()
-            .project()
-            .sink_stream
-            .poll_flush(cx)
-            .map_err(|err| {
-                self.as_mut().send_disconnect_if_needed(&err);
-                self.send_result(Err(err));
-            })
+        let result = {
+            let mut self_ = self.as_mut().project();
+            let result = self_.sink_stream.as_mut().poll_flush(cx);
+            // Small requests dominate many workloads. Only check the codec
+            // buffer after a request large enough to retain an allocation.
+            if matches!(result, Poll::Ready(Ok(()))) && *self_.large_write_pending_flush {
+                self_.sink_stream.trim_drained_write_buffer();
+                *self_.large_write_pending_flush = false;
+            }
+            result
+        };
+        result.map_err(|err| {
+            self.as_mut().send_disconnect_if_needed(&err);
+            self.send_result(Err(err));
+        })
     }
 
     fn poll_close(
